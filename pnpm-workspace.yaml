@@ -69,4 +69,8 @@ minimumReleaseAgeExclude:
   - node-addon-require-builtin@0.1.4
 
 patchedDependencies:
+  # Adds stealth/ox-alpha to the OpenRouter catalog (dist/providers/openrouter.models.js).
+  # Drop this patch when a pi-ai release ships the model; re-derive the entry
+  # against that release's generated data if it still does not.
+  '@earendil-works/pi-ai@0.82.1': patches/@earendil-works__pi-ai@0.82.1.patch
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch

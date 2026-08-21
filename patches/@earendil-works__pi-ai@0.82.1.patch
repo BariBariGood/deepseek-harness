@@ -1,0 +1,26 @@
+diff --git a/dist/providers/openrouter.models.js b/dist/providers/openrouter.models.js
+index 866615187aaeecc30f3cf65ae812890ece954d28..4d77f6cd00979c68c9ad1726030cd7242f626f5e 100644
+--- a/dist/providers/openrouter.models.js
++++ b/dist/providers/openrouter.models.js
+@@ -3,4 +3,21 @@
+ import values from "./data/openrouter.json" with { type: "json" };
+ import { flattenModelCatalog } from "../model-catalog.js";
+ export const OPENROUTER_MODELS = flattenModelCatalog("openrouter", values);
++// Local addition pending upstream: https://openrouter.ai/stealth/ox-alpha
++// Capacities, modalities, and efforts follow OpenRouter's /api/v1/models entry
++// (reasoning efforts max/high/low; reasoning mandatory, so off stays unsupported).
++OPENROUTER_MODELS["stealth/ox-alpha"] = {
++  id: "stealth/ox-alpha",
++  name: "Ox Alpha",
++  api: "openai-completions",
++  baseUrl: "https://openrouter.ai/api/v1",
++  provider: "openrouter",
++  reasoning: true,
++  input: ["text", "image"],
++  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++  contextWindow: 1048576,
++  maxTokens: 131072,
++  compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
++  thinkingLevelMap: { low: "low", high: "high", max: "max", off: null, minimal: null, medium: null },
++};
+ //# sourceMappingURL=openrouter.models.js.map
