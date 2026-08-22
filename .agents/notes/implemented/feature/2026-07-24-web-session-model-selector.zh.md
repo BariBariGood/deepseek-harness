@@ -16,7 +16,7 @@ Web Host 为每个新建或恢复的 Agent 安装 `ModelSelection`。如果会�
 
 浏览器中的 `ModelDirectoryResolver` 为每个实时会话持有一个 `ModelDirectory`。其快照包含当前完整的 `ModelSelection`、分组目录、提供方失败记录、操作错误，以及 `idle`、`loading`、`ready`、`selecting`、`error` 状态。挂载时会预先填充触发器标签，此后每次打开菜单都会刷新目录。目录与选择调用共用操作代次，防止较早响应覆盖较新结果；连接重置会先丢弃当前进程中的投影，再恢复 Host 选择。失败时保留先前的选择和可用分组。
 
-`@deepseek-ai/dsh-client-ui-conversation` 将会话作用域的单实例 slot `conversation.input.model` 声明为其输入栏 entry 的子 slot。InputBar 在尾部控件区将该 seat 渲染于 pending 指示器与主按钮之前；该 seat 接收输入栏的 `locked` owner prop 与会话作用域。`@deepseek-ai/dsh-client-ui-model-selection` 占用该 seat，并在同一目录上提供 `/model`。其紧凑型触发器显示目录中的确切模型名称与生效的推理强度标签。当前选择不在分组中时，触发器显示 `Select model`，模型列表不标记任何活动行，Effort 行也保持隐藏；选择一个已列出的模型，会通过共享的选择路径赋值完整选择。除此情形外，向上展开的菜单会首先提供 Model 与 Effort；Model 可深入提供方分组，Effort 可深入适配器排序的级别。仅当适配器没有配置模型默认值时，才显示提供方默认值行。
+`@deepseek-ai/dsh-client-ui-conversation` 将会话作用域的单实例 slot `conversation.input.model` 声明为其输入栏 entry 的子 slot。InputBar 在尾部控件区将该 seat 渲染于 pending 指示器与主按钮之前；该 seat 接收输入栏的 `locked` owner prop 与会话作用域。`@deepseek-ai/dsh-client-ui-model-selection` 占用该 seat，并在同一目录上提供 `/model`。其紧凑型触发器显示目录中的确切模型名称与生效的推理强度标签。当前选择不在分组中时，触发器显示 `Select model`，模型列表不标记任何活动行，Effort 行也保持隐藏；选择一个已列出的模型，会通过共享的选择路径赋值完整选择。除此情形外，向上展开的菜单会首先提供 Model 与 Effort；Model 可深入提供方分组，Effort 可深入适配器排序的级别。模型面板会针对已加载目录做本地搜索过滤——对模型名称、id、说明或提供方名称做大小写不敏感匹配（提供方名称命中时保留整个分组）——并在每次打开菜单时重置过滤器。仅当适配器没有配置模型默认值时，才显示提供方默认值行。
 
 生产环境的浏览器名册由 `apps/cli/config/base.cordis.yml` 与 `apps/cli/config/web.cordis.yml` 共同组装；模型功能对应其中一行 `dsh.client` 配置项，而不是 Web boot 代码中硬编码的包。其包 manifest（元数据清单）将加载顺序置于运行时与命令功能之后；Cordis 服务注入则等待 conversation slot 可用，再注册 composer 占用方。
 
@@ -40,4 +40,4 @@ Web Host 为每个新建或恢复的 Agent 安装 `ModelSelection`。如果会�
 
 ## 测试
 
-Host 测试固定分组发现、目录与精确元数据失败隔离、已记录推理强度恢复且不注入陈旧行、不受目录约束的未列出模型选择、不支持的推理强度拒绝、默认值具体化，以及切换仅影响下一次组装。客户端测试固定共享目录、重连恢复与完整选择提交。组件测试固定动态推理强度标签、说明、提供方默认值展示、推理强度提交，以及缺席模型行的 `Select model` 回退。无密钥 built-app fixture（测试前置数据）加载生产模型插件，选择 OpenAI 的 GPT-5 及其 Max 推理强度，发起一个轮次，并验证下一条生成的响应会报告两个 ID；DeepSeek 配置 fixture 会省略活动目录行，在选择替代模型之前固定该回退。
+Host 测试固定分组发现、目录与精确元数据失败隔离、已记录推理强度恢复且不注入陈旧行、不受目录约束的未列出模型选择、不支持的推理强度拒绝、默认值具体化，以及切换仅影响下一次组装。客户端测试固定共享目录、重连恢复与完整选择提交。组件测试固定动态推理强度标签、说明、提供方默认值展示、推理强度提交、模型面板的本地搜索过滤，以及缺席模型行的 `Select model` 回退。无密钥 built-app fixture（测试前置数据）加载生产模型插件，选择 OpenAI 的 GPT-5 及其 Max 推理强度，发起一个轮次，并验证下一条生成的响应会报告两个 ID；DeepSeek 配置 fixture 会省略活动目录行，在选择替代模型之前固定该回退。

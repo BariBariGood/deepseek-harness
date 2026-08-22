@@ -7,9 +7,11 @@
  * ToggleButton) shows both: model name + effort in the caption tone.
  * Data and submission ride the SAME per-session ModelDirectory as the
  * /model popup; exact-model reasoning metadata and the selected effort come
- * from the Host rather than a client-owned vocabulary. A rejected selection
- * announces through the shared transient Toast anchored to the composer
- * card; the in-menu strip with Retry remains the catalog-load surface.
+ * from the Host rather than a client-owned vocabulary. The model pane keeps
+ * a local search filter over the loaded directory (same shape as the
+ * /model popup's shell search); a rejected selection announces through the
+ * shared transient Toast anchored to the composer card; the in-menu strip
+ * with Retry remains the catalog-load surface.
  */
 import {
   useEffect, useId, useMemo, useRef, useState, useSyncExternalStore,
@@ -52,6 +54,8 @@ export function ModelSelect(
   )
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<Pane>('root')
+  // The model pane's local filter text; blank keeps every provider group.
+  const [query, setQuery] = useState('')
   // The in-menu error strip serves catalog loads (its Retry re-runs the
   // load); a rejected SELECTION announces through the transient toast
   // instead, so the strip renders only while the latest failure-capable
@@ -76,6 +80,21 @@ export function ModelSelect(
           : { reasoningEffort: model.reasoning.defaultEffort },
       } satisfies ModelSelection,
     }))), [state.groups])
+  // Local filter over the loaded directory (never re-fetched per keystroke):
+  // a group matches whole, otherwise only its matching models survive.
+  const visibleGroups = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (needle === '') return state.groups
+    return state.groups.flatMap((group) => {
+      if (group.name.toLowerCase().includes(needle)) return [group]
+      const models = group.models.filter(model =>
+        model.name.toLowerCase().includes(needle)
+        || model.id.toLowerCase().includes(needle)
+        || (model.description?.toLowerCase().includes(needle) ?? false))
+      return models.length === 0 ? [] : [{ ...group, models }]
+    })
+  }, [state.groups, query])
+  const visibleCount = visibleGroups.reduce((count, group) => count + group.models.length, 0)
   const selectedIndex = state.current === null
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
@@ -124,6 +143,12 @@ export function ModelSelect(
     return () => { document.removeEventListener('mousedown', closeOutside) }
   }, [open])
 
+  // Leaving the model pane (close, Escape back-out, drill switch) discards
+  // its filter, so every open starts from the full grouped list.
+  useEffect(() => {
+    if (!open || pane !== 'model') setQuery('')
+  }, [open, pane])
+
   if (!available) return null
 
   const show = (): void => {
@@ -142,7 +167,10 @@ export function ModelSelect(
     const items = itemRefs.current.filter(item => item !== null)
     if (items.length === 0) return
     const active = items.findIndex(item => item === document.activeElement)
-    const next = (Math.max(active, 0) + offset + items.length) % items.length
+    // From outside the item list (the search input), enter at the near end.
+    const next = active === -1
+      ? offset > 0 ? 0 : items.length - 1
+      : (active + offset + items.length) % items.length
     items[next]?.focus()
   }
 
@@ -268,6 +296,14 @@ export function ModelSelect(
 
           {pane === 'model' && (
             <>
+              <input
+                className={css.search}
+                type="text"
+                placeholder={t('search.placeholder')}
+                aria-label={t('search.aria')}
+                value={query}
+                onChange={(event) => { setQuery(event.currentTarget.value) }}
+              />
               {state.status === 'loading' && (
                 <div className={css.status}>{t('status.loading')}</div>
               )}
@@ -284,7 +320,7 @@ export function ModelSelect(
                 </div>
               ))}
               <div className={clsx(css.groups, 'scrollable')}>
-                {state.groups.map((group) => {
+                {visibleGroups.map((group) => {
                   const headingId = `${id}-${group.id}`
                   return (
                     <section role="group" aria-labelledby={headingId} className={css.group} key={group.id}>
@@ -321,6 +357,9 @@ export function ModelSelect(
               </div>
               {state.status === 'ready' && choices.length === 0 && (
                 <div className={css.empty}>{t('empty.models')}</div>
+              )}
+              {state.status === 'ready' && choices.length > 0 && visibleCount === 0 && (
+                <div className={css.empty}>{t('empty.search')}</div>
               )}
             </>
           )}

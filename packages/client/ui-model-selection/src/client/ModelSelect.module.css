@@ -135,6 +135,21 @@
   cursor: pointer;
 }
 
+/* Model-pane search field (same treatment as the popupSelect shell's
+ * search input in ui-commands): hairline box, transparent on the menu
+ * surface, caption-adjacent sizing. */
+.search {
+  margin: 2px 2px 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--dsw-alias-border-inverted);
+  border-radius: 8px;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .groups {
   min-height: 0;
   overflow-y: auto;
