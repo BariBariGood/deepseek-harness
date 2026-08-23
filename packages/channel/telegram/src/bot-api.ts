@@ -82,7 +82,11 @@ export class TelegramBotApiClient {
     return payload.result
   }
 
-  /** Identity check used at connect time to fail fast on a bad token. */
+  /**
+   * Identity check used at connect time to fail fast on a bad token.
+   * @param timeoutMs - Optional per-call timeout override in milliseconds.
+   * @returns The bot's numeric id and `@`-less username.
+   */
   async getMe(timeoutMs?: number): Promise<{ id: number; username: string }> {
     return this.call('getMe', {}, timeoutMs)
   }
@@ -90,17 +94,33 @@ export class TelegramBotApiClient {
   /**
    * Long-poll updates strictly after `offset`. Resolves with an empty array
    * when the poll budget elapses without traffic.
+   * @param offset - Fetch updates with `update_id` strictly greater than this.
+   * @param pollTimeoutSeconds - Server-side long-poll hang budget in seconds.
+   * @param signal - Caller abort; a stop request ends the loop promptly.
+   * @returns The accepted updates in ascending update-id order.
    */
-  async getUpdates(offset: number, pollTimeoutSeconds: number, signal?: AbortSignal): Promise<TelegramUpdate[]> {
+  async getUpdates(
+    offset: number,
+    pollTimeoutSeconds: number,
+    signal?: AbortSignal,
+  ): Promise<TelegramUpdate[]> {
     return this.call('getUpdates', { offset, timeout: pollTimeoutSeconds, allowed_updates: ['message'] }, (pollTimeoutSeconds + 10) * 1000, signal)
   }
 
-  /** Drop a webhook if one is set; leftover webhooks make getUpdates 409. */
+  /**
+   * Drop a webhook if one is set; leftover webhooks make getUpdates 409.
+   * @returns Resolves after the Bot API acknowledges the deletion.
+   */
   async deleteWebhook(): Promise<void> {
     await this.call('deleteWebhook', { drop_pending_updates: false }, undefined)
   }
 
-  /** Send one plain-text message; returns the platform message id. */
+  /**
+   * Send one plain-text message.
+   * @param chatId - Destination chat (numeric or `@username`).
+   * @param text - Message body; link previews are disabled.
+   * @returns The platform message id of the sent message.
+   */
   async sendMessage(chatId: TelegramChatId, text: string): Promise<{ messageId: number }> {
     const result = await this.call<{ message_id: number }>('sendMessage', {
       chat_id: chatId,
@@ -110,7 +130,12 @@ export class TelegramBotApiClient {
     return { messageId: result.message_id }
   }
 
-  /** Show the typing indicator; lasts ~5s server-side, so callers heartbeat it. */
+  /**
+   * Show a typing indicator; lasts ~5s server-side, so callers heartbeat it.
+   * @param chatId - Destination chat (numeric or `@username`).
+   * @param action - The chat action; only `typing` is used today.
+   * @returns Resolves when the indicator is accepted.
+   */
   async sendChatAction(chatId: TelegramChatId, action: 'typing'): Promise<void> {
     await this.call('sendChatAction', { chat_id: chatId, action }, undefined)
   }

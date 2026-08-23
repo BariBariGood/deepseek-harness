@@ -64,6 +64,10 @@ export const SESSION_FORMAT_VERSION = 0
  */
 export type SessionOrigin = 'subagent' | 'telegram'
 
+/**
+ * Storage metadata folded into every durable session: format version, identity,
+ * lineage, and the caller-supplied {@link SessionOrigin} classification.
+ */
 export interface SessionHeader {
   /**
    * On-disk format version, stamped from {@link SESSION_FORMAT_VERSION} when the

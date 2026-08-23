@@ -37,6 +37,7 @@ export interface RelayServices {
   getLiveAgent(sessionId: SessionId): unknown
 }
 
+/** Access and working-directory facts the relay enforces on every route. */
 export interface RelayConfig {
   /** Working directory recorded on gateway-created sessions. */
   cwd: string
@@ -57,6 +58,8 @@ const HELP_TEXT = [
 /**
  * True when `/new` or `/reset` asks for a fresh conversation. Both exist for
  * muscle memory; they mean the same thing here.
+ * @param text - Trimmed inbound text.
+ * @returns True for either reset command spelling.
  */
 export function isResetCommand(text: string): boolean {
   return text === '/new' || text === '/reset'
@@ -68,6 +71,7 @@ interface ChatState {
   agent: RelayAgent | undefined
 }
 
+/** Composition hooks supplied by the Cordis wrapper at construction. */
 export interface RelayOptions {
   /** Invoked per created session so callers can join preset rosters. */
   setupFactory?: (() => ((agentCtx: Context) => Promise<void>) | undefined) | undefined
@@ -75,12 +79,18 @@ export interface RelayOptions {
   presetId?: string | undefined
 }
 
+/** The relayed reply: folded text plus the turn's end reason, if observed. */
 export interface ReplyOutcome {
   text: string
   reason: TurnEndReason | undefined
 }
 
-/** Extract the last committed non-empty assistant text at or after `seq`. */
+/**
+ * Extract the last committed non-empty assistant text at or after `seq`.
+ * @param events - The session's full event log.
+ * @param seq - Snapshot seq taken before the turn was submitted.
+ * @returns The reply text (possibly empty) and the observed end reason.
+ */
 export function assistantTextSince(events: readonly SessionEvent[], seq: number): ReplyOutcome {
   let text: string | undefined
   let reason: TurnEndReason | undefined
@@ -113,7 +123,10 @@ export class TelegramRelay {
     },
   ) {}
 
-  /** Forget the chat's current session so the next message starts fresh. */
+  /**
+   * Forget the chat's current session so the next message starts fresh.
+   * @param message - The inbound message identifying the chat to reset.
+   */
   resetChat(message: InboundMessage): void {
     const state = this.chatState(message)
     state.generation += 1
@@ -124,6 +137,8 @@ export class TelegramRelay {
    * Route one authorized, addressed inbound message: commands answer
    * immediately; anything else queues behind the chat's previous turn and
    * relays the final assistant text.
+   * @param message - The normalized inbound message to route.
+   * @returns Resolves when the reply (or rejection) is fully delivered.
    */
   async handle(message: InboundMessage): Promise<void> {
     if (!this.isAllowed(message)) {

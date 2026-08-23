@@ -5,12 +5,18 @@ import { normalizeUpdate } from './inbound.ts'
 import type { InboundMessage } from './types.ts'
 
 /**
- * Consume updates forever until stopped. Network failures back off
- * exponentially; 429 responses honor Telegram's retry-after; a 409 conflict
- * (another consumer holds getUpdates) surfaces instead of being retried away,
- * mirroring hermes-agent's polling-conflict handling. Each message is handed
- * to `onMessage` in order before the offset advances, so a thrown routing
- * error stops the loop rather than silently skipping the update.
+ * Consume updates forever until stopped.
+ * @param options - Client, per-message handler, poll budget, backoff ceiling,
+ * and the abort signal owned by the plugin's effect.
+ * @returns Resolves when the signal aborts; rejects on an unrecoverable
+ * conflict (another getUpdates consumer).
+ *
+ * Network failures back off exponentially; 429 responses honor Telegram's
+ * retry-after; a 409 conflict (another consumer holds getUpdates) surfaces
+ * instead of being retried away, mirroring hermes-agent's polling-conflict
+ * handling. Each message is handed to `onMessage` in order before the offset
+ * advances, so a thrown routing error stops the loop rather than silently
+ * skipping the update.
  */
 export async function pollMessages(options: {
   client: TelegramBotApiClient

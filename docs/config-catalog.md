@@ -395,6 +395,31 @@ Depends on: [`LocalConfig`](#deepseek-aidsh-bash-local)
 
 Source: [`packages/shell/bash-sandbox/src/index.ts:35`](../packages/shell/bash-sandbox/src/index.ts)
 
+<a id="deepseek-aidsh-channel-telegram"></a>
+
+## `@deepseek-ai/dsh-channel-telegram`
+
+Requires: `agents`
+
+```ts config-catalog
+/** Plugin config: connection and access control for the bot (all defaulted). */
+export interface Config {
+  /** Credential ref carrying the bot token; resolved through the seam or env. */
+  botTokenRef?: string
+  /**
+   * Telegram user ids allowed to drive the agent. An empty list denies every
+   * inbound message: an open bot is never a default.
+   */
+  allowedUserIds?: number[]
+  /** Working directory recorded on gateway-created sessions. */
+  cwd?: string
+  /** Long-poll hang budget per getUpdates request, in seconds. */
+  pollTimeoutSeconds?: number
+}
+```
+
+Source: [`packages/channel/telegram/src/index.ts:22`](../packages/channel/telegram/src/index.ts)
+
 <a id="deepseek-aidsh-client-connection"></a>
 
 ## `@deepseek-ai/dsh-client-connection`

@@ -51,6 +51,7 @@ export function sessionKeyOf(message: InboundMessage): string {
  * Hermes calls this mention gating.
  * @param message - The normalized message.
  * @param botUsernames - Lowercased bot usernames without the leading `@`.
+ * @returns True when the message should reach session routing.
  */
 export function isAddressedToChannel(message: InboundMessage, botUsernames: readonly string[]): boolean {
   if (message.chatType === 'private') return true
