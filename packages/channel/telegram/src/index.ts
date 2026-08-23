@@ -126,8 +126,9 @@ export function apply(ctx: Context, config: Config): void {
           allowedUserIds,
         },
         {
-          send: async (chatId, text) => {
-            await client.sendMessage(chatId, text)
+          send: async (chatId, text) => await client.sendMessage(chatId, text),
+          edit: async (chatId, messageId, text) => {
+            await client.editMessageText(chatId, messageId, text)
           },
           typing: chatId => client.sendChatAction(chatId, 'typing'),
           logger: ctx.logger,

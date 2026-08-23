@@ -48,6 +48,9 @@ export interface RelayConfig {
   allowedUserIds: readonly string[]
 }
 
+/** Minimum spacing between draft edits; Telegram rate-lips rapid edits. */
+const STREAM_EDIT_INTERVAL_MS = 1_500
+
 const HELP_TEXT = [
   'DSH Telegram channel:',
   '/new — start a fresh conversation',
@@ -77,6 +80,8 @@ export interface RelayOptions {
   setupFactory?: (() => ((agentCtx: Context) => Promise<void>) | undefined) | undefined
   /** Recorded on gateway-created sessions when a default composition exists. */
   presetId?: string | undefined
+  /** Draft-edit cadence in milliseconds; tests shrink it. */
+  streamIntervalMs?: number | undefined
 }
 
 /** The relayed reply: folded text plus the turn's end reason, if observed. */
@@ -117,7 +122,8 @@ export class TelegramRelay {
     private readonly services: RelayServices,
     private readonly config: RelayConfig,
     private readonly io: {
-      send(chatId: InboundMessage['chatId'], text: string): Promise<void>
+      send(chatId: InboundMessage['chatId'], text: string): Promise<{ messageId: number }>
+      edit(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
       typing(chatId: InboundMessage['chatId']): Promise<void>
       logger?: { info(message: string): void; warn(message: string): void }
     },
@@ -169,27 +175,57 @@ export class TelegramRelay {
       content: [{ type: 'text', text: message.text }],
       source: { kind: 'user' },
     }))
-    const typing = this.startTypingHeartbeat(message.chatId)
+
+    // Draft streaming: one placeholder message edited in place on a throttle,
+    // mirroring hermes' draft frames. The final fold below is authoritative;
+    // edits are best-effort and never fail the turn.
+    let draftId: number | undefined
+    const sendDraft = async (text: string): Promise<void> => {
+      const body = text.trim()
+      if (body.length === 0) return
+      try {
+        if (draftId === undefined) {
+          const sent = await this.io.send(message.chatId, body)
+          draftId = sent.messageId
+        } else {
+          await this.io.edit(message.chatId, draftId, body)
+        }
+      } catch {
+        // A rejected edit keeps the last visible draft; the final fold still sends.
+        draftId = undefined
+      }
+    }
+
+    const typingTick = (): void => {
+      void this.io.typing(message.chatId).catch(() => {})
+    }
+    typingTick()
+    const typing = setInterval(typingTick, 4_000)
+    const streamTimer = setInterval(() => {
+      const { text } = assistantTextSince(agent.session.events, firstSeq)
+      if (text.length > 0) void sendDraft(text)
+    }, this.options.streamIntervalMs ?? STREAM_EDIT_INTERVAL_MS)
     try {
       await agent.whenIdle()
     } finally {
       clearInterval(typing)
+      clearInterval(streamTimer)
     }
+
     const outcome = assistantTextSince(agent.session.events, firstSeq)
     await this.services.flushSession(agent.session)
     const suffix = outcome.reason !== undefined && outcome.reason.kind !== 'completed'
       ? `\n\n_(turn ended: ${outcome.reason.kind})_`
       : ''
-    await this.io.send(message.chatId, `${outcome.text}${suffix}`.trim() || '(empty reply)')
+    const finalText = `${outcome.text}${suffix}`.trim() || '(empty reply)'
+    if (draftId !== undefined) {
+      await this.io.edit(message.chatId, draftId, finalText).catch(() =>
+        this.io.send(message.chatId, finalText))
+    } else {
+      await this.io.send(message.chatId, finalText)
+    }
   }
 
-  private startTypingHeartbeat(chatId: InboundMessage['chatId']): ReturnType<typeof setInterval> {
-    void this.io.typing(chatId)
-    const timer = setInterval(() => {
-      void this.io.typing(chatId).catch(() => {})
-    }, 4_000)
-    return timer
-  }
 
   /**
    * Live reuse → reuse; otherwise create a fresh generation-scoped session.

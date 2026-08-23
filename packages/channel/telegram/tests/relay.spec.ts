@@ -76,6 +76,7 @@ describe('TelegramRelay', () => {
     if (options.existingLive !== undefined) liveAgents.set('tg-100', options.existingLive)
     const scripted = scriptedAgent({ replies: options.replies ?? [] })
     const sent: { chatId: TelegramChatId; text: string }[] = []
+    const edits: { chatId: TelegramChatId; messageId: number; text: string }[] = []
     const typingCalls: TelegramChatId[] = []
 
     const relay = new TelegramRelay(
@@ -101,13 +102,15 @@ describe('TelegramRelay', () => {
       {
         send: async (chatId, text) => {
           sent.push({ chatId, text })
+          return { messageId: sent.length }
         },
+        edit: async () => {},
         typing: async (chatId) => {
           typingCalls.push(chatId)
         },
       },
     )
-    return { relay, sent, typingCalls, created, scripted, followupsOf: () => scripted.followups }
+    return { relay, sent, edits, typingCalls, created, scripted, followupsOf: () => scripted.followups }
   }
 
   it('creates a deterministic session and relays the final text', async () => {
@@ -181,7 +184,9 @@ describe('TelegramRelay', () => {
       {
         send: async (chatId, text) => {
           sent.push({ chatId, text })
+          return { messageId: sent.length }
         },
+        edit: async () => {},
         typing: async () => {},
       },
     )
@@ -210,5 +215,67 @@ describe('TelegramRelay', () => {
     const events: SessionEvent[] = [stale, endEvent(1, 'completed')]
     const outcome = assistantTextSince(events, 2)
     expect(outcome).toEqual({ text: '', reason: undefined })
+  })
+})
+
+describe('TelegramRelay draft streaming', () => {
+  it('edits one draft message with folded text and finalizes it', async () => {
+    const sent: { chatId: TelegramChatId; text: string }[] = []
+    const edits: { chatId: TelegramChatId; messageId: number; text: string }[] = []
+
+    const agent = {
+      session: {
+        seq: 0,
+        events: [] as SessionEvent[],
+        flush: async () => true,
+      },
+      followup() {},
+      whenIdle: () => new Promise<void>((resolve) => {
+        // A real turn lands assistant messages across time: step one early,
+        // step two only at completion.
+        const append = (text: string): void => {
+          agent.session.events.push({
+            type: 'assistant/message',
+            seq: agent.session.seq + 1,
+            time: 1,
+            data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } },
+          } as unknown as SessionEvent)
+          agent.session.seq += 1
+        }
+        setTimeout(() => {
+          append('draft part one')
+          setTimeout(() => {
+            append('draft part one + two')
+            resolve()
+          }, 25)
+        }, 10)
+      }),
+      cancel: () => {},
+    }
+
+    const relay = new TelegramRelay(
+      { streamIntervalMs: 5 },
+      {
+        createAgent: async () => ({ agent }),
+        getLiveAgent: () => undefined,
+        flushSession: async () => true,
+      },
+      { cwd: '/tmp/fake-cwd', allowedUserIds: ['555'] },
+      {
+        send: async (chatId, text) => {
+          sent.push({ chatId, text })
+          return { messageId: sent.length }
+        },
+        edit: async (chatId, messageId, text) => {
+          edits.push({ chatId, messageId, text })
+        },
+        typing: async () => {},
+      },
+    )
+
+    await relay.handle(message('stream please'))
+    expect(sent.map(entry => entry.text)).toEqual(['draft part one'])
+    expect(edits.length).toBeGreaterThanOrEqual(1)
+    expect(edits.at(-1)?.text).toBe('draft part one + two')
   })
 })

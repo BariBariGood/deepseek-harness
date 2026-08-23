@@ -16,6 +16,6 @@ None directly; relayed user texts enter their sessions' history exactly like com
 
 ## Known Limitations and Deferred Work
 
-- **Final-text delivery only** — no streaming message edits, media inbound/outbound, voice transcription, or inline pickers yet.
+- **Text-only drafts** — replies stream as one throttled edited message; media inbound/outbound, voice transcription, and inline pickers are still out of scope.
 - **No pairing flow** — access is allowlist-only until the owner extends the list; unknown users are silently ignored.
 - **Cold resume joins the current default composition** rather than reconstructing the recorded one.

@@ -131,6 +131,22 @@ export class TelegramBotApiClient {
   }
 
   /**
+   * Replace the text of a previously sent message (draft streaming).
+   * @param chatId - Destination chat (numeric or `@username`).
+   * @param messageId - Platform message id returned by sendMessage.
+   * @param text - The replacement body.
+   * @returns Resolves when the edit is accepted.
+   */
+  async editMessageText(chatId: TelegramChatId, messageId: number, text: string): Promise<void> {
+    await this.call('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      link_preview_options: { is_disabled: true },
+    }, undefined)
+  }
+
+  /**
    * Show a typing indicator; lasts ~5s server-side, so callers heartbeat it.
    * @param chatId - Destination chat (numeric or `@username`).
    * @param action - The chat action; only `typing` is used today.
