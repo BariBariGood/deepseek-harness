@@ -8,10 +8,7 @@ import { isAbsolute } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import type { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
-import {
-  SessionId,
-  type SessionHeader,
-} from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionHeader, type SessionOrigin } from '@deepseek-ai/dsh-session'
 import { sql } from './sql.ts'
 
 /** Current physical-record schema with packed and compressed event rows. */
@@ -27,7 +24,7 @@ export interface SessionRow {
   readonly cwd: string | null
   readonly parent_session: string | null
   readonly seed_length: number | null
-  readonly origin: 'subagent' | null
+  readonly origin: SessionOrigin | null
   readonly incarnation: string
   readonly revision: number
   readonly delegation_depth: number | null
@@ -288,7 +285,7 @@ export function decodeSessionRow(value: unknown): SessionRow {
   if (cwd !== null && !isAbsolute(cwd)) throw new Error('stored session cwd must be absolute')
   const parent = nullableStringField(row, 'parent_session')
   const origin = nullableStringField(row, 'origin')
-  if (origin !== null && origin !== 'subagent') throw new Error('stored session origin must be subagent or null')
+  if (origin !== null && origin !== 'subagent' && origin !== 'telegram') throw new Error('stored session origin must be subagent or telegram or null')
   const incarnation = nonemptyStringField(row, 'incarnation')
   if (!UUID.test(incarnation)) throw new Error('stored session incarnation must be a UUID')
   return {

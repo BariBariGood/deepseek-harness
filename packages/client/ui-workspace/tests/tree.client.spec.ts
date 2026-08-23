@@ -3,8 +3,8 @@ import type {
   SessionId, SessionListState, SessionSummary, WorkspaceId, WorkspaceView,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import {
-  deriveFlat, deriveGroups, deriveSearchResults, workspaceLabel, relativeTime,
-  UNGROUPED_KEY, UNGROUPED_LABEL,
+  deriveFlat, deriveGroups, deriveSearchResults, deriveTelegramSessions,
+  workspaceLabel, relativeTime, UNGROUPED_KEY, UNGROUPED_LABEL,
 } from '../src/client/tree.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 
@@ -446,5 +446,35 @@ describe('relativeTime', () => {
     expect(relativeTime(now - 2 * 86_400_000, now)).toEqual({ unit: 'days', n: 2 })
     expect(relativeTime(now - 60 * 86_400_000, now)).toEqual({ unit: 'months', n: 2 })
     expect(relativeTime(0, now)).toEqual({ unit: 'years', n: 1 })
+  })
+})
+
+describe('deriveTelegramSessions', () => {
+  const telegramSummary = (id: string, updatedAt: number): SessionSummary => ({
+    ...summary(id, updatedAt),
+    origin: 'telegram',
+  })
+
+  it('collects telegram-origin sessions newest first and excludes them elsewhere', () => {
+    const local = summary('local', 30)
+    const botNew = telegramSummary('bot-new', 20)
+    const botOld = telegramSummary('bot-old', 10)
+    const sessions = list(local, botNew, botOld)
+
+    expect(deriveTelegramSessions(sessions, noArchive).map(node => node.id))
+      .toEqual([sid('bot-new'), sid('bot-old')])
+    // The workspace groups and the flat list exclude the channel's rows.
+    const groups = deriveGroups(sessions, [workspace('first', ['local', 'bot-new', 'bot-old'])], noArchive, view())
+    for (const group of groups) {
+      expect(group.sessions.map(node => node.id)).not.toContain(sid('bot-new'))
+    }
+    expect(deriveFlat(sessions, noArchive).map(node => node.id)).toEqual([sid('local')])
+  })
+
+  it('hides archived and blank telegram sessions like any other row', () => {
+    const blankCurrent = { ...telegramSummary('blank-tg', 20), blank: true } as SessionSummary
+    const sessions = list(telegramSummary('kept', 30), blankCurrent)
+    expect(deriveTelegramSessions(sessions, archived('blank-tg')).map(node => node.id))
+      .toEqual([sid('kept')])
   })
 })

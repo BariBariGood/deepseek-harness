@@ -12,6 +12,9 @@ import {
 /** Group key for Sessions outside every Workspace. */
 export const UNGROUPED_KEY = ''
 
+/** Section key for sessions started through the Telegram channel. */
+export const TELEGRAM_KEY = 'telegram'
+
 /** Display label for the ungrouped bucket row. */
 export const UNGROUPED_LABEL = 'Ungrouped'
 
@@ -117,6 +120,7 @@ function byRecency(a: SessionSummary, b: SessionSummary): number {
  */
 function sessionVisible(session: SessionSummary, current: SessionId | undefined, archived: ReadonlySet<SessionId>): boolean {
   return session.origin !== 'subagent'
+    && session.origin !== 'telegram'
     && !archived.has(session.id)
     && (!session.blank || session.id === current)
 }
@@ -270,6 +274,31 @@ export function deriveGroups(
     })
   }
   return groups
+}
+
+/**
+ * Derive the Telegram section rows: sessions the channel created (origin
+ * `telegram`), newest first. Blank provisional rows never appear — the
+ * channel mints a session only when a message arrives.
+ * @param list - sessions list snapshot.
+ * @param archivedSessionIds - registry-global archive set.
+ * @returns telegram-origin rows in render order.
+ */
+export function deriveTelegramSessions(
+  list: SessionListState,
+  archivedSessionIds: readonly SessionId[],
+): SessionNode[] {
+  const archived = new Set(archivedSessionIds)
+  const descendants = indexSubagentDescendants(list.byId)
+  const rows: SessionSummary[] = []
+  for (const id of list.ids) {
+    const s = list.byId[id]
+    if (s === undefined || s.origin !== 'telegram' || archived.has(s.id)) continue
+    if (s.blank && s.id !== list.current) continue
+    rows.push(s)
+  }
+  rows.sort(byRecency)
+  return rows.map(session => sessionNode(session, descendants))
 }
 
 /**

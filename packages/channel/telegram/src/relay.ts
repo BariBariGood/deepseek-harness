@@ -9,6 +9,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionOrigin } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { InboundMessage } from './types.ts'
 
@@ -30,7 +31,7 @@ export interface RelayServices {
   flushSession(session: RelayAgent['session']): Promise<boolean>
   createAgent(options: {
     sessionId: SessionId
-    meta: { cwd: string; agentPreset?: string }
+    meta: { cwd: string; agentPreset?: string; origin?: SessionOrigin }
     setup?: ((agentCtx: Context) => Promise<void>) | undefined
   }): Promise<{ agent: RelayAgent }>
   getLiveAgent(sessionId: SessionId): unknown
@@ -190,9 +191,11 @@ export class TelegramRelay {
     }
     const handle = await this.services.createAgent({
       sessionId,
-      meta: this.options.presetId === undefined
-        ? { cwd: this.config.cwd }
-        : { cwd: this.config.cwd, agentPreset: this.options.presetId },
+      meta: {
+        cwd: this.config.cwd,
+        ...(this.options.presetId === undefined ? {} : { agentPreset: this.options.presetId }),
+        origin: 'telegram',
+      },
       setup: this.options.setupFactory?.(),
     })
     state.agent = handle.agent

@@ -58,6 +58,12 @@ export const SESSION_FORMAT_VERSION = 0
 /**
  * Immutable validated storage metadata, kept outside the conversation event log.
  */
+/**
+ * Why a session exists. `subagent` marks delegation-created children;
+ * `telegram` marks conversations started through the Telegram channel.
+ */
+export type SessionOrigin = 'subagent' | 'telegram'
+
 export interface SessionHeader {
   /**
    * On-disk format version, stamped from {@link SESSION_FORMAT_VERSION} when the
@@ -82,7 +88,7 @@ export interface SessionHeader {
    * Coarse product classification for a session created as a subagent child.
    * This is presentation metadata, not proof that the child is continuable.
    */
-  readonly origin?: 'subagent'
+  readonly origin?: SessionOrigin
   /**
    * Delegation depth: absent (zero) for a top-level session, parent depth + 1
    * for a subagent child. Persisted so a recursion budget survives restart and
@@ -115,7 +121,7 @@ export interface CreateSessionOptions {
     readonly parentSession?: SessionId
     readonly createdAt?: number
     readonly seedLength?: number
-    readonly origin?: 'subagent'
+    readonly origin?: SessionOrigin
     readonly delegationDepth?: number
     readonly agentPreset?: string
   }

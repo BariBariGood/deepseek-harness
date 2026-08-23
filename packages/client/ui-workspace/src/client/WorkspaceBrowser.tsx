@@ -20,11 +20,15 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceBrowserProps } from './contract/slots.ts'
 import type { SessionNode, SessionOrderBy } from './tree.ts'
-import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
+import {
+  deriveFlat, deriveGroups, deriveSearchResults, deriveTelegramSessions,
+  TELEGRAM_KEY, UNGROUPED_KEY,
+} from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
 import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
+import { TelegramSection } from './TelegramSection.tsx'
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -278,6 +282,10 @@ function SessionTree({
     () => Object.entries(groupExpansion).filter(([, expanded]) => expanded).map(([key]) => key),
     [groupExpansion],
   )
+  const telegramNodes = useMemo(
+    () => deriveTelegramSessions(list, archivedSessionIds),
+    [list, archivedSessionIds],
+  )
   const ungroupedSessionIds = useMemo(() => {
     const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
     return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
@@ -390,6 +398,21 @@ function SessionTree({
         role="tree"
         aria-label={t('section.sessions')}
       >
+        <TelegramSection
+          nodes={telegramNodes}
+          expanded={groupExpansion[TELEGRAM_KEY] !== false}
+          onToggle={() => {
+            setGroupExpanded(TELEGRAM_KEY, !(groupExpansion[TELEGRAM_KEY] !== false))
+          }}
+          currentId={current}
+          now={now}
+          onOpen={open}
+          onFork={forkSession}
+          onRename={onSessionRename}
+          onArchive={onSessionArchive}
+          label={t('group.telegram')}
+          t={t}
+        />
         {groups.length === 0 && (
           <div className={css.empty}>{t('empty.none')}</div>
         )}
@@ -569,6 +592,11 @@ function FlatList({
     () => deriveFlat(list, archivedSessionIds),
     [list, archivedSessionIds],
   )
+  const telegramNodes = useMemo(
+    () => deriveTelegramSessions(list, archivedSessionIds),
+    [list, archivedSessionIds],
+  )
+  const [telegramExpanded, setTelegramExpanded] = useState(true)
   const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
   const previousOrderBy = useRef(orderBy)
   useEffect(() => {
@@ -620,6 +648,21 @@ function FlatList({
   return (
     <div className={clsx(css.treeBody, css.wide)}>
       <div className={clsx(css.list, css.flatList)} role="tree" aria-label={t('section.sessions')}>
+        <TelegramSection
+          nodes={telegramNodes}
+          expanded={telegramExpanded}
+          onToggle={() => {
+            setTelegramExpanded(value => !value)
+          }}
+          currentId={list.current}
+          now={now}
+          onOpen={open}
+          onFork={forkSession}
+          onRename={onSessionRename}
+          onArchive={onSessionArchive}
+          label={t('group.telegram')}
+          t={t}
+        />
         {rows.length === 0 && (
           <div className={css.empty}>{t('empty.none')}</div>
         )}

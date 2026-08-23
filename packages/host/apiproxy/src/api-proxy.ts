@@ -18,7 +18,7 @@ import { createUserMessage, freezeMessage, ReasoningEffortId } from '@deepseek-a
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
-import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
+import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, SessionOrigin, UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
@@ -475,7 +475,7 @@ function sessionListUpdatedAt(header: SessionHeader, metadata: SessionListMetada
 /** Shared Session-header projection for list baselines and creation frames. */
 function sessionListFields(header: SessionHeader, events: readonly SessionEvent[] = []): {
   parentSessionId?: SessionId
-  origin?: 'subagent'
+  origin?: SessionOrigin
   cwd?: string
   agentPreset?: string
 } {

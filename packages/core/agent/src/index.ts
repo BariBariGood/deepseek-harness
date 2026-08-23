@@ -11,7 +11,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { isPromise } from 'node:util/types'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId, SessionOrigin } from '@deepseek-ai/dsh-session'
 import type { TypertContext, TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
 import type { Agent, AgentOptions } from './runtime-types.ts'
 
@@ -95,7 +95,7 @@ export interface CreateAgentOptions {
     readonly cwd?: string
     readonly parentSession?: SessionId
     readonly seedLength?: number
-    readonly origin?: 'subagent'
+    readonly origin?: SessionOrigin
     readonly delegationDepth?: number
     readonly agentPreset?: string
   }

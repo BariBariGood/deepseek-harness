@@ -24,6 +24,7 @@ import { SESSION_SEARCH_RESULT_LIMIT } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type {
   HostObservable, SessionMaybeProvideInfo, SessionProvideInfo,
 } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionOrigin } from '@deepseek-ai/dsh-session/types'
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
 import type { SnapshotStore } from '../contract/store.ts'
 import { createSnapshotStore } from '../contract/store.ts'
@@ -54,7 +55,7 @@ export interface SessionSummary {
   agentPreset?: string
   parentId?: SessionId
   /** Coarse durable origin for navigation filtering; not a continuation capability. */
-  origin?: 'subagent'
+  origin?: SessionOrigin
   running: boolean
   /** User interaction currently blocking this session (sidebar amber-dot state). */
   pendingInteraction?: PendingInteractionStatus

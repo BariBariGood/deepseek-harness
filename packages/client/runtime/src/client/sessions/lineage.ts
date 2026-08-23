@@ -3,6 +3,7 @@
 // Orphaned lineage degrades to root level; cycles fail soft and emit as roots.
 
 import type { SessionId, SessionSummary } from '@deepseek-ai/dsh-api-remotes/client'
+import type { SessionOrigin } from '@deepseek-ai/dsh-session/types'
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
 import type { PendingInteractionStatus } from './pending.ts'
 
@@ -23,7 +24,7 @@ export interface SessionListEntry {
   blank: boolean
   parentSessionId?: SessionId
   /** Coarse durable origin for navigation filtering; not a continuation capability. */
-  origin?: 'subagent'
+  origin?: SessionOrigin
   cwd?: string
   /** Agent preset the session's agent was composed from (summary passthrough). */
   agentPreset?: string

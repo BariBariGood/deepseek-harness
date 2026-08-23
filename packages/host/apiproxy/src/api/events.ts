@@ -11,7 +11,7 @@ import type { ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-a
 import type { Message } from '@deepseek-ai/dsh-llm/types'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type { CallId } from '@deepseek-ai/dsh-llm/brand'
-import type { JsonValue, SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
+import type { JsonValue, SessionEvent, SessionId, SessionOrigin } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallView, ToolResultView } from '@deepseek-ai/dsh-tools/presentation'
 import type { RpcError, RpcId, RpcRequest } from './rpc.ts'
 import type { JobView } from './jobs.ts'
@@ -130,7 +130,7 @@ export type HostFrame =
     sessionId: SessionId
     blank: boolean
     parentSessionId?: SessionId
-    origin?: 'subagent'
+    origin?: SessionOrigin
     cwd?: string
     agentPreset?: string
   }
