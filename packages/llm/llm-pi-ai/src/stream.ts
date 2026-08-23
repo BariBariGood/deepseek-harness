@@ -58,7 +58,12 @@ function classifyPiAiError(message: string): string {
     // undici renders a mid-stream socket drop as a bare `terminated` (its
     // `cause` — the real SocketError — was flattened away upstream); Node's
     // stream layer says `Premature close`.
-    || /\bterminated\b|premature close/i.test(message)) {
+    || /\bterminated\b|premature close/i.test(message)
+    // Some OpenAI-compatible gateways (e.g. OpenCode Zen Go) deliver a
+    // well-formed SSE completion whose `finish_reason` is `network_error`
+    // when the upstream connection drops mid-generation: the failure arrives
+    // as prose, not as a thrown fetch error, so it must be classified here.
+    || /finish_reason:\s*network_error/i.test(message)) {
     return 'TRANSPORT'
   }
   return 'PI_AI_ERROR'

@@ -837,6 +837,10 @@ describe('mapStopReason / mapUsage', () => {
     'OpenAI Responses stream ended before a terminal response event',
     'openrouter stream ended without a terminal event',
     'Stream ended without finish_reason',
+    // OpenAI-compatible gateways that report a dropped upstream as a
+    // well-formed completion with a non-standard finish_reason instead of
+    // throwing (observed on OpenCode Zen Go's /zen/go/v1 lane).
+    'Provider finish_reason: network_error',
   ])('maps pi-ai transport wording %j', (errorMessage) => {
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage })))
       .toMatchObject({ kind: 'error', failure: { code: 'TRANSPORT' } })
