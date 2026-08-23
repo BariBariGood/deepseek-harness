@@ -2200,6 +2200,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'usage',
+    summary: 'Serves the web usage panel over the `usage/get` endpoint.',
+    description: 'Serves the web usage panel over the `usage/get` endpoint. Every call re-resolves credentials and refetches both providers: billing state is read-only remote data the service never caches.',
+    methods: [
+      {
+        signature: '@Remote(\'get\') async get(): Promise<UsageSnapshot>',
+        description: 'Fetch every supported provider once. Reports are independent: a missing key or failed request degrades only its own entry, so one provider\'s outage never blanks the panel.',
+        parameters: [],
+        returns: 'Current billing state of every supported provider.',
+      },
+    ],
+  },
+  {
     key: 'userQuestions',
     summary: '`ctx.userQuestions`: one active UI provider plus an `ask()` API.',
     description: '`ctx.userQuestions`: one active UI provider plus an `ask()` API.',
@@ -4928,6 +4941,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'UpdateTeamTaskRequest',
     declaration: 'export interface UpdateTeamTaskRequest {\n    readonly taskId: TeamTaskId;\n    readonly expectedRevision: number;\n    readonly action: TeamTaskAction;\n    readonly subject?: string;\n    readonly description?: string;\n    readonly blockedBy?: readonly TeamTaskId[];\n    readonly writeScopes?: readonly string[];\n    readonly owner?: string;\n}',
+  },
+  {
+    name: 'UsageProviderId',
+    declaration: 'export type UsageProviderId = \'openrouter\' | \'opencode-go\';',
+  },
+  {
+    name: 'UsageReport',
+    declaration: 'export type UsageReport = {\n    provider: \'openrouter\';\n    code: \'ok\';\n    totalCredits: number;\n    totalUsage: number;\n} | {\n    provider: \'opencode-go\';\n    code: \'ok\';\n    windows: UsageWindow[];\n} | {\n    provider: UsageProviderId;\n    code: \'unconfigured\';\n} | {\n    provider: UsageProviderId;\n    code: \'error\';\n    message: string;\n};',
+  },
+  {
+    name: 'UsageSnapshot',
+    declaration: 'export interface UsageSnapshot {\n    collectedAt: string;\n    reports: UsageReport[];\n}',
+  },
+  {
+    name: 'UsageWindow',
+    declaration: 'export interface UsageWindow {\n    window: \'5h\' | \'weekly\' | \'monthly\';\n    usedPercent: number;\n    resetAt: string | null;\n}',
   },
   {
     name: 'UserMessage',

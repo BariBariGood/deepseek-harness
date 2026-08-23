@@ -232,6 +232,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Owns local per-assistant-message feedback, lifecycle and target validation, per-item compare-and-set, and the Host unary Remote contract without entering Session history or telemetry.',
   },
   {
+    key: 'usage',
+    pkg: 'usage',
+    title: 'Connected-provider usage projection',
+    mode: 'core',
+    consumers: ['api-remotes'],
+    note: 'Resolves provider credential refs per call, fetches OpenRouter credits and OpenCode Go windows in parallel, and degrades each report independently over the Host unary Remote contract without caching.',
+  },
+  {
     key: 'workspaceRegistry',
     pkg: 'workspace',
     title: 'Workspace entity registry',

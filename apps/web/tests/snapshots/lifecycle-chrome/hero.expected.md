@@ -17,6 +17,9 @@
     - img
     - text: workspace
   - treeitem "New Session" [selected]
+- button "Provider usage":
+  - img
+  - text: Provider usage
 - button "Settings":
   - img
   - text: Settings

@@ -100,6 +100,11 @@
     - id: plugin-inventory
       name: '@deepseek-ai/dsh-host-plugin-inventory'
 
+    # Connected-provider billing state (OpenRouter credits, OpenCode Go
+    # limits) for the sidebar usage panel.
+    - id: usage
+      name: '@deepseek-ai/dsh-host-usage'
+
     # The API gateway: the transport-agnostic dispatch face every client shape
     # shares. The base layer's agent-default-model service owns the default model.
     - id: api-gateway
@@ -293,6 +298,10 @@
 
     - id: ui-trajectory
       name: '@deepseek-ai/dsh-client-ui-trajectory'
+
+    # Provider usage card in the sidebar footer, over the usage Remote.
+    - id: ui-usage
+      name: '@deepseek-ai/dsh-client-ui-usage'
 
 # ── the agent plane moves behind agent presets ─────────────────────────────
 #

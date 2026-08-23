@@ -43,6 +43,9 @@
       "path": "../../host/plugin-inventory"
     },
     {
+      "path": "../../host/usage"
+    },
+    {
       "path": "../../interaction/commands"
     },
     {

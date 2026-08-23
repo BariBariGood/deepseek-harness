@@ -64,6 +64,9 @@ flowchart LR
   svc_storageDomain["ctx.storageDomain<br/>Domain data facility"]
   pkg_workspace["workspace"]
   svc_messageFeedback["ctx.messageFeedback<br/>Lifecycle-bound message feedback"]
+  pkg_usage["usage"]
+  svc_usage["ctx.usage<br/>Connected-provider usage projection"]
+  pkg_api_remotes["api-remotes"]
   svc_workspaceRegistry["ctx.workspaceRegistry<br/>Workspace entity registry"]
   svc_sessionQuery["ctx.sessionQuery<br/>Session reads, traces, filters, and search"]
   pkg_session_reference["session-reference"]
@@ -296,6 +299,7 @@ flowchart LR
   pkg_token_meter --> svc_tokenMeter
   pkg_tools --> svc_tools
   pkg_typert_registry --> svc_typert
+  pkg_usage --> svc_usage
   pkg_user_questions --> svc_userQuestions
   pkg_web --> svc_web
   pkg_web_fetch_http --> svc_web
@@ -412,6 +416,7 @@ flowchart LR
   svc_tools --> pkg_tool_web
   svc_typert --> pkg_api_gateway
   svc_typert --> pkg_typert_loader
+  svc_usage --> pkg_api_remotes
   svc_userQuestions --> pkg_tool_ask_user
   svc_web --> pkg_tool_web
   svc_webServer --> pkg_connection
@@ -441,6 +446,7 @@ flowchart LR
 | `ctx.storage` | `seam` | [`storage`](../packages/storage/storage) | [`storage-json`](../packages/storage/storage-json), [`storage-sqlite`](../packages/storage/storage-sqlite) | [`storage-domain`](../packages/storage/storage-domain) | - | Backends register side by side under names; data forms (domain first) mount on the hub and translate typed operations into opaque KV-unit primitives. |
 | `ctx.storageDomain` | `core` | [`storage-domain`](../packages/storage/storage-domain) | - | [`workspace`](../packages/workspace/workspace), [`message-feedback`](../packages/feedback/message-feedback) | - | Waits for every configured backend, then publishes the domain form as one lifecycle-bound service for typed durable state. |
 | `ctx.messageFeedback` | `core` | [`message-feedback`](../packages/feedback/message-feedback) | - | - | - | Owns local per-assistant-message feedback, lifecycle and target validation, per-item compare-and-set, and the Host unary Remote contract without entering Session history or telemetry. |
+| `ctx.usage` | `core` | `usage` | - | [`api-remotes`](../packages/api/remotes) | - | Resolves provider credential refs per call, fetches OpenRouter credits and OpenCode Go windows in parallel, and degrades each report independently over the Host unary Remote contract without caching. |
 | `ctx.workspaceRegistry` | `core` | [`workspace`](../packages/workspace/workspace) | - | `apiproxy` | - | Owns WorkspaceId-branded records over the domain facility; stable sessionIds accounts drive Host RPC and GUI projections. |
 | `ctx.sessionQuery` | `seam` | [`session-query`](../packages/session-query/session-query) | [`session-query-sqlite`](../packages/session-query/session-query-sqlite) | [`session-reference`](../packages/context/session-reference), [`tool-session-query`](../packages/session-query/tool-session-query) | - | The interface supplies exact reads, filters, and traces; its concrete backend adds full-text reconciliation, ranking, snippets, and cursor generations, while the model consumer owns workspace authority and cursor-free rendering. |
 | `ctx.fileReferences` | `seam` | [`file-reference`](../packages/context/file-reference) | [`file-reference-local`](../packages/context/file-reference-local) | - | - | The interface returns path-only completion candidates within the addressed Agent cwd through its unary Remote contract; providers own namespace access and ranking without reading file contents. |
