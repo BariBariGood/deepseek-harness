@@ -17,11 +17,11 @@ export async function pollMessages(options: {
   /** Invoked once per normalized text message, in arrival order. */
   onMessage: (message: InboundMessage) => Promise<void>
   /** Long-poll hang budget per request, in seconds. */
-  pollTimeoutSeconds?: number
+  pollTimeoutSeconds?: number | undefined
   /** Ceiling for the exponential reconnect backoff, in milliseconds. */
-  maxBackoffMs?: number
+  maxBackoffMs?: number | undefined
   /** Resolved by `stop()` when the loop ends cleanly. */
-  signal?: AbortSignal
+  signal?: AbortSignal | undefined
 }): Promise<void> {
   const pollTimeoutSeconds = options.pollTimeoutSeconds ?? 25
   const maxBackoffMs = options.maxBackoffMs ?? 30_000
@@ -29,13 +29,15 @@ export async function pollMessages(options: {
   let offset = 0
   let backoffMs = 500
 
-  while (signal?.aborted !== true) {
+  const abortedNow = (): boolean => signal?.aborted === true
+  for (;;) {
+    if (abortedNow()) return
     let batch: Awaited<ReturnType<TelegramBotApiClient['getUpdates']>>
     try {
       batch = await options.client.getUpdates(offset, pollTimeoutSeconds, signal)
       backoffMs = 500
     } catch (error) {
-      if (signal?.aborted === true || (error instanceof TelegramApiError && error.code === 0 && isAbortBody(error))) return
+      if (abortedNow() || (error instanceof TelegramApiError && error.code === 0 && isAbortBody(error))) return
       if (error instanceof TelegramApiError && error.conflict) throw error
       const waitMs = error instanceof TelegramApiError && error.retryAfterSeconds !== undefined
         ? error.retryAfterSeconds * 1000

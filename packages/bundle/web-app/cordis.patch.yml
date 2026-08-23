@@ -105,6 +105,11 @@
     - id: usage
       name: '@deepseek-ai/dsh-host-usage'
 
+    # Telegram channel: relays allowlisted bot chats into agent sessions.
+    # Idle (warn-only) when no TELEGRAM_BOT_TOKEN credential is configured.
+    - id: channel-telegram
+      name: '@deepseek-ai/dsh-channel-telegram'
+
     # The API gateway: the transport-agnostic dispatch face every client shape
     # shares. The base layer's agent-default-model service owns the default model.
     - id: api-gateway
