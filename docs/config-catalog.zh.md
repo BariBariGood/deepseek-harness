@@ -991,6 +991,36 @@ export interface DeepSeekCatalogModel {
 
 来源：[`packages/llm/llm-deepseek/src/index.ts:106`](../packages/llm/llm-deepseek/src/index.ts)
 
+<a id="deepseek-aidsh-llm-persist"></a>
+
+## `@deepseek-ai/dsh-llm-persist`
+
+需要：`agents`
+
+```ts config-catalog
+/** Provider-pinned unbounded retry persistence configuration. */
+export interface Config {
+  /** Provider routes whose eligible failures persist beyond the bounded retry budget (default []). */
+  providers?: string[]
+  /** Failure codes eligible for persisted retries (default [EMPTY_RESPONSE]). */
+  codes?: string[]
+  /** Local exponential-backoff and jitter configuration. */
+  backoff?: BackoffConfig
+}
+
+/** Local exponential-backoff and jitter configuration for persisted retries. */
+export interface BackoffConfig {
+  /** Initial local exponential-backoff delay in milliseconds (default 2000). */
+  initialDelayMs?: number
+  /** Maximum locally scheduled or accepted provider delay in milliseconds (default 30000). */
+  maxDelayMs?: number
+  /** Symmetric random multiplier range around one (default 0.2). */
+  jitterRatio?: number
+}
+```
+
+来源：[`packages/llm/llm-persist/src/index.ts:49`](../packages/llm/llm-persist/src/index.ts)
+
 <a id="deepseek-aidsh-llm-pi-ai"></a>
 
 ## `@deepseek-ai/dsh-llm-pi-ai`

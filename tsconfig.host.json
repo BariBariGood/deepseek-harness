@@ -197,6 +197,7 @@
     { "path": "./packages/context/agent-instructions" },
     { "path": "./packages/core/agent-loop" },
     { "path": "./packages/llm/llm-retry" },
+    { "path": "./packages/llm/llm-persist" },
     { "path": "./packages/examples/agent-spine-demo" },
     { "path": "./packages/subprocess/subprocess" },
     { "path": "./packages/subprocess/subprocess-local" },

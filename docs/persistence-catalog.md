@@ -476,6 +476,28 @@ Source: [`packages/hooks/hook-protocol/src/types.ts:31`](../packages/hooks/hook-
 
 ### `llm/*`
 
+<a id="llmpersist--log-only"></a>
+
+#### `llm/persist` — log-only
+
+```ts persistence-catalog
+/** Durable, non-surface record of one persisted retry scheduled after a failed request attempt. */
+'llm/persist': LlmPersistEventData
+```
+
+Source: [`packages/llm/llm-persist/src/types.ts:9`](../packages/llm/llm-persist/src/types.ts)
+
+<a id="llmpersist-started--log-only"></a>
+
+#### `llm/persist-started` — log-only
+
+```ts persistence-catalog
+/** Durable transition written after a persist wait succeeds and before the next request attempt starts. */
+'llm/persist-started': LlmPersistStartedEventData
+```
+
+Source: [`packages/llm/llm-persist/src/types.ts:11`](../packages/llm/llm-persist/src/types.ts)
+
 <a id="llmretry--log-only"></a>
 
 #### `llm/retry` — log-only

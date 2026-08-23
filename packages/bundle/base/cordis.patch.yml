@@ -72,6 +72,13 @@
     - id: llm-retry
       name: '@deepseek-ai/dsh-llm-retry'
 
+    # Downstream companion of llm-retry: once the bounded provider-policy
+    # budget is exhausted (or absent), persists configured providers through
+    # configured failure codes without a retry cap. Inert until a
+    # `llm-persist:` settings section names providers.
+    - id: llm-persist
+      name: '@deepseek-ai/dsh-llm-persist'
+
     # User-settings document (`$DSH_HOME/settings.yaml`, hot-reloaded): a
     # `llm-deepseek:` or `llm-pi-ai:` section there overrides the adapter entries
     # below without a restart, and is what the web Models page writes.
