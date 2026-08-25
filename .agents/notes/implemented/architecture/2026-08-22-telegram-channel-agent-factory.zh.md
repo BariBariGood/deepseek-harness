@@ -16,13 +16,15 @@ Status: implemented
 
 **授权默认拒绝并读取共享凭据面。** token 每次启动经凭据接缝在 `TELEGRAM_BOT_TOKEN` 引用下解析（回退启动环境），绝不在导入期读取；没有 token 时插件记录一条警告并保持空闲，而不是拖垮它挂载的 surface。空白名单不回应任何人。群聊额外要求斜杠命令或 bot 提及（hermes 的提及门控），潜伏的 bot 不会插嘴闲聊。
 
-**回复在静止后拉取而非流式。** 每回合在 `followup` 前快照日志 seq，等待 `whenIdle`，折叠快照之后的 `assistant/message` 事件，经会话存储 flush 做检查点，然后发送一条消息。流式编辑（hermes 的草稿帧）推迟到此通道赢得它们之后；折叠点就是未来流消费者的挂载处。
+**回复以单条节流草稿气泡流式输出。** 每回合在 `followup` 前快照日志 seq，首段折叠文本一出现就发送，并对同一条消息按节流编辑直到 `whenIdle`；最终折叠是权威结果并经会话存储 flush 做检查点。被拒绝的编辑（相同文本、瞬时 429）保留草稿 id，下一跳继续编辑而不是重复发送。阻塞的回合绝不冻结轮询循环：handler 不等待地触发，中继按会话串行回合。
+
+**模型选择是每聊天覆盖，不是新会话。** `/model` 镜像 hermes 的斜杠 UX：裸命令显示当前模型加 `llm` 的全部路由，`provider/model` 经 `resolveCallConfig` 校验后精确切换，裸名模糊匹配、有歧义时列出候选。选择保存在 `ChatState`，穿入 `ctx.agents.create`，并在 agent 的 setup 窗口安装 `ModelSelectionRef`——会话中途切换只改动引用即可重路由下一个回合，无需重建会话或丢失历史。
 
 **Origin 是加宽的联合，不是新字段。** `SessionHeader.origin` 变为 `SessionOrigin = 'subagent' | 'telegram'`；每个校验器（header 检查、jsonl 编解码、sqlite 列检查、两个 zod wire schema）同时接受两个值，而所有 `'subagent'` 比较保持原义。侧栏的工作区树在其唯一可见性收口处排除 telegram 行，并在专属可折叠小节中渲染它们——与 hermes 按平台划分的侧栏小节同构。
 
 ## Testing
 
-`packages/channel/telegram/tests/transport.spec.ts` 覆盖 Bot API 客户端（信封解包、类型化 429/409 错误、token 作用域 URL）、归一化（bot/空丢弃、话题键、提及门控）和轮询循环（有序 offset 推进、retry-after 退避、冲突浮现、干净中止）。`tests/relay.spec.ts` 在假服务上驱动中继：确定性 id 与代后缀、复用、白名单拒绝、`/new` 与 `/help`、按会话串行、异常原因后缀。`packages/client/ui-workspace/tests/tree.client.spec.ts` 断言分区（telegram 行离开 groups/flat、最新优先、归档/空白处理）。
+`packages/channel/telegram/tests/transport.spec.ts` 覆盖 Bot API 客户端（信封解包、类型化 429/409 错误、token 作用域 URL）、归一化（snake_case `update_id` 映射、bot/空丢弃、话题键、提及门控）和轮询循环（有序 offset 推进、retry-after 退避、冲突浮现、干净中止）。`tests/relay.spec.ts` 在假服务上驱动中继：确定性 id 与代后缀、复用、白名单拒绝、`/new` 与 `/help`、按会话串行、异常原因后缀、草稿流式，以及 `/model` 矩阵（列表、精确切换、模糊匹配、歧义、未命中）。`packages/client/ui-workspace/tests/tree.client.spec.ts` 断言分区（telegram 行离开 groups/flat、最新优先、归档/空白处理）。
 
 ## Consequences
 

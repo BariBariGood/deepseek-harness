@@ -94,6 +94,15 @@ describe('TelegramRelay', () => {
           return { agent: fresh.agent }
         },
         getLiveAgent: sessionId => liveAgents.get(String(sessionId)),
+        listModels: async () => [
+          { provider: 'opencode-go', model: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+          { provider: 'zen-go', model: 'ox-alpha-free', name: 'Ox Alpha' },
+        ],
+        resolveSelection: async (provider, model) => {
+          if (provider === 'missing') throw new Error('unknown provider')
+          return { provider, model }
+        },
+        defaultSelection: () => ({ provider: 'opencode-go', model: 'deepseek-v4-flash' }),
       },
       {
         cwd: '/tmp/fake-cwd',
@@ -151,6 +160,42 @@ describe('TelegramRelay', () => {
     await bench0.relay.handle(message('/help'))
     expect(bench0.created).toHaveLength(0)
     expect(bench0.sent.at(-1)?.text).toContain('/new')
+    expect(bench0.sent.at(-1)?.text).toContain('/model')
+  })
+
+  it('lists the current model and available routes on /model', async () => {
+    const bench0 = bench()
+    await bench0.relay.handle(message('/model'))
+    expect(bench0.created).toHaveLength(0)
+    const text = bench0.sent.at(-1)?.text ?? ''
+    expect(text).toContain('Current model: opencode-go/deepseek-v4-flash')
+    expect(text).toContain('zen-go/ox-alpha-free')
+  })
+
+  it('switches by full provider/model and by a unique bare name', async () => {
+    const bench0 = bench()
+    await bench0.relay.handle(message('/model zen-go/ox-alpha-free'))
+    expect(bench0.sent.at(-1)?.text).toBe('Model set to zen-go/ox-alpha-free.')
+    await bench0.relay.handle(message('/model'))
+    expect(bench0.sent.at(-1)?.text).toContain('Current model: zen-go/ox-alpha-free')
+    await bench0.relay.handle(message('/model flash'))
+    expect(bench0.sent.at(-1)?.text).toBe('Model set to opencode-go/deepseek-v4-flash.')
+  })
+
+  it('tells the user when a bare /model name matches nothing', async () => {
+    const bench0 = bench()
+    await bench0.relay.handle(message('/model go'))
+    const text = bench0.sent.at(-1)?.text ?? ''
+    expect(text).toContain('No model matches')
+    expect(text).toContain('Send /model')
+  })
+
+  it('lists candidates when a bare /model name is ambiguous', async () => {
+    const bench0 = bench()
+    await bench0.relay.handle(message('/model e'))
+    const text = bench0.sent.at(-1)?.text ?? ''
+    expect(text).toContain('ambiguous')
+    expect(text).toContain('zen-go/ox-alpha-free')
   })
 
   it('serializes concurrent messages per chat instead of interleaving turns', async () => {
@@ -179,6 +224,9 @@ describe('TelegramRelay', () => {
           },
         }),
         getLiveAgent: () => undefined,
+        listModels: async () => [],
+        resolveSelection: async (provider, model) => ({ provider, model }),
+        defaultSelection: () => ({ provider: 'opencode-go', model: 'deepseek-v4-flash' }),
       },
       { cwd: '/tmp/fake-cwd', allowedUserIds: ['555'] },
       {
@@ -259,6 +307,9 @@ describe('TelegramRelay draft streaming', () => {
         createAgent: async () => ({ agent }),
         getLiveAgent: () => undefined,
         flushSession: async () => true,
+        listModels: async () => [],
+        resolveSelection: async (provider, model) => ({ provider, model }),
+        defaultSelection: () => ({ provider: 'opencode-go', model: 'deepseek-v4-flash' }),
       },
       { cwd: '/tmp/fake-cwd', allowedUserIds: ['555'] },
       {

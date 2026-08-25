@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-22-telegram-channel-agent-factory.md
-2026-08-22-telegram-channel-agent-factory.md: 110f822906392b0421b019329a270ef2f8f56a34
-2026-08-22-telegram-channel-agent-factory.zh.md: 54d317f18870365a9413299b043436dea4686080
+2026-08-22-telegram-channel-agent-factory.md: e5227a660e4624db7c5f906ffe59bf54055c439d
+2026-08-22-telegram-channel-agent-factory.zh.md: 2b13d7a31909bf17a0616faeff834f15f6fe78f5

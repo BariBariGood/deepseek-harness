@@ -10,6 +10,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the Context merge that types ctx.agents.
 import type {} from '@deepseek-ai/dsh-agent'
+// Type-only: pulls the Context merge that types ctx.get('agentDefaultModel').
+import type {} from '@deepseek-ai/dsh-agent-default-model'
+// Type-only: pulls the Context merge that types ctx.get('tools') in the setup window.
+import type {} from '@deepseek-ai/dsh-tools'
+import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import type { ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import z from '@deepseek-ai/schemastery'
@@ -37,8 +43,11 @@ export interface Config {
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'channel-telegram'
 
-/** Required services: the agent factory owns session+loop lifecycles. */
-export const inject = ['agents']
+/** Required services: the agent factory owns session+loop lifecycles; the
+ * credential provider must be mounted before the startup token read; sessions
+ * owns the relay's durability flush; agent-default-model supplies the model
+ * selection gateway-created sessions get. */
+export const inject = ['agents', 'credentials', 'sessions', 'agentDefaultModel']
 
 /** Config schema; schemastery applies defaults before apply runs. */
 export const Config: z<Config> = z.object({
@@ -103,23 +112,69 @@ export function apply(ctx: Context, config: Config): void {
       const relay = new TelegramRelay(
         {
           setupFactory: () =>
-            presets === undefined
-              ? undefined
-              : async (agentCtx) => {
-                await presets.mount(agentCtx)
-              },
+            async (agentCtx) => {
+              if (presets !== undefined) await presets.mount(agentCtx)
+              // ask_user_question blocks the turn until answered — un-answerable
+              // from a phone DM, it would hang the chat silently. Deny it AFTER
+              // the preset mounts (tools register during mount; restricting
+              // before would name an unknown tool and fail the session).
+              agentCtx.get('tools')?.restrict({ deny: ['ask_user_question'] })
+            },
           presetId,
         },
         {
           // The relay only ever hands back sessions minted by this factory.
           flushSession: session => ctx.sessions.flush(session as Parameters<typeof ctx.sessions.flush>[0]),
-          createAgent: async ({ sessionId, meta, setup }) => {
-            const handle = setup === undefined
-              ? await ctx.agents.create({ sessionId, meta })
-              : await ctx.agents.create({ sessionId, meta, setup })
-            return { agent: handle.agent }
+          createAgent: async ({ sessionId, meta, selection, setup }) => {
+            const defaultModel = ctx.get('agentDefaultModel')
+            const fallback = defaultModel === undefined ? { provider: '', model: '' } : defaultModel.currentSelection()
+            const provider = selection?.provider ?? fallback.provider
+            const model = selection?.model ?? fallback.model
+            // The selection ref is the relay's live /model handle: installed in
+            // the agent's setup window so a mid-chat switch re-routes the next
+            // step without recreating the session.
+            const selectionRef: ModelSelectionRef = { current: { provider, model }, assembled: undefined }
+            const composedSetup = async (agentCtx: Context): Promise<void> => {
+              installModelSelection(agentCtx, selectionRef)
+              if (setup !== undefined) await setup(agentCtx)
+            }
+            const handle = await ctx.agents.create({
+              sessionId,
+              meta,
+              agentOptions: { provider, model },
+              setup: composedSetup,
+            })
+            return { agent: Object.assign(handle.agent, { selectionRef }) }
           },
           getLiveAgent: sessionId => ctx.agents.get(sessionId),
+          listModels: async () => {
+            const llm = ctx.get('llm')
+            if (llm === undefined) return []
+            const out: { provider: string; model: string; name: string }[] = []
+            for (const provider of llm.listProviders()) {
+              try {
+                for (const m of await llm.listModels(provider.id)) {
+                  out.push({ provider: provider.id, model: m.id, name: m.name })
+                }
+              } catch {
+                // A provider that cannot list stays out of the menu; its routes
+                // still resolve if named explicitly.
+              }
+            }
+            return out
+          },
+          resolveSelection: async (provider, model) => {
+            const llm = ctx.get('llm')
+            if (llm === undefined) throw new Error('llm service is not mounted')
+            const resolved = await llm.resolveCallConfig({ provider, model })
+            return { provider: resolved.provider, model: resolved.model }
+          },
+          defaultSelection: () => {
+            const defaultModel = ctx.get('agentDefaultModel')
+            if (defaultModel === undefined) return { provider: '', model: '' }
+            const s = defaultModel.currentSelection()
+            return { provider: s.provider, model: s.model }
+          },
         },
         {
           cwd: config.cwd ?? process.cwd(),
@@ -140,9 +195,16 @@ export function apply(ctx: Context, config: Config): void {
         client,
         pollTimeoutSeconds,
         signal: controller.signal,
-        onMessage: async (message) => {
-          if (!isAddressedToChannel(message, [me.username.toLowerCase()])) return
-          await relay.handle(message)
+        onMessage: (message) => {
+          if (!isAddressedToChannel(message, [me.username.toLowerCase()])) return Promise.resolve()
+          // Not awaited: the relay chains turns per chat, so ordering is kept,
+          // but a blocked turn (model hang, pending question) must never freeze
+          // the polling loop — later updates would strand in Telegram's queue.
+          void relay.handle(message).catch((error: unknown) => {
+            ctx.logger.error(`channel-telegram: handler failed for chat ${String(message.chatId)} — ${String(error)}`)
+            void client.sendMessage(message.chatId, '_(turn failed — see server logs)_').catch(() => {})
+          })
+          return Promise.resolve()
         },
       }).catch((error: unknown) => {
         if (controller.signal.aborted) return

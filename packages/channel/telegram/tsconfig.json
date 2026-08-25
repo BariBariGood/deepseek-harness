@@ -12,7 +12,16 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../core/agent"
+    },
+    {
+      "path": "../../core/agent-default-model"
+    },
+    {
       "path": "../../core/session"
+    },
+    {
+      "path": "../../core/tools"
     },
     {
       "path": "../../credentials/credentials"

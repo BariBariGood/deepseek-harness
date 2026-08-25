@@ -20,6 +20,8 @@ export interface RelayAgent {
     readonly seq: number
     readonly events: readonly SessionEvent[]
   }
+  /** Live model-selection ref installed at setup; absent on legacy agents. */
+  readonly selectionRef?: { current: { provider: string; model: string } | undefined } | undefined
   followup(input: ReturnType<typeof createUserMessage>): void
   whenIdle(): Promise<void>
   cancel(reason: { kind: 'user' }): void
@@ -32,9 +34,17 @@ export interface RelayServices {
   createAgent(options: {
     sessionId: SessionId
     meta: { cwd: string; agentPreset?: string; origin?: SessionOrigin }
+    /** Chat's model override; `undefined` follows the deployment default. */
+    selection?: { provider: string; model: string } | undefined
     setup?: ((agentCtx: Context) => Promise<void>) | undefined
   }): Promise<{ agent: RelayAgent }>
   getLiveAgent(sessionId: SessionId): unknown
+  /** Every selectable provider/model route, for `/model` display. */
+  listModels(): Promise<readonly { provider: string; model: string; name: string }[]>
+  /** Validate one route through the LLM seam before a chat adopts it. */
+  resolveSelection(provider: string, model: string): Promise<{ provider: string; model: string }>
+  /** The deployment default, shown by bare `/model` when no override is set. */
+  defaultSelection(): { provider: string; model: string }
 }
 
 /** Access and working-directory facts the relay enforces on every route. */
@@ -54,6 +64,8 @@ const STREAM_EDIT_INTERVAL_MS = 1_500
 const HELP_TEXT = [
   'DSH Telegram channel:',
   '/new — start a fresh conversation',
+  '/model — show the current model',
+  '/model <provider/model> — switch model',
   '/help — show this help',
   'Anything else is sent to the agent.',
 ].join('\n')
@@ -72,6 +84,8 @@ interface ChatState {
   generation: number
   chain: Promise<void>
   agent: RelayAgent | undefined
+  /** Per-chat model override; `undefined` follows the deployment default. */
+  selection: { provider: string; model: string } | undefined
 }
 
 /** Composition hooks supplied by the Cordis wrapper at construction. */
@@ -125,7 +139,7 @@ export class TelegramRelay {
       send(chatId: InboundMessage['chatId'], text: string): Promise<{ messageId: number }>
       edit(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
       typing(chatId: InboundMessage['chatId']): Promise<void>
-      logger?: { info(message: string): void; warn(message: string): void }
+      logger?: { info(message: string): void; warn(message: string): void; error(message: string): void }
     },
   ) {}
 
@@ -160,11 +174,83 @@ export class TelegramRelay {
       await this.io.send(message.chatId, HELP_TEXT)
       return
     }
+    if (message.text === '/model' || message.text.startsWith('/model ')) {
+      await this.handleModelCommand(message)
+      return
+    }
     const state = this.chatState(message)
     const previous = state.chain
     const run = previous.catch(() => {}).then(() => this.runTurn(message, state))
     state.chain = run
     await run
+  }
+
+  /**
+   * `/model` — show the chat's current model; `/model <provider/model>` —
+   * validate the route through the LLM seam, then apply it to this chat's
+   * live agent (and every future one until `/new` or another switch).
+   * @param message - The `/model` command message.
+   */
+  private async handleModelCommand(message: InboundMessage): Promise<void> {
+    const arg = message.text.slice('/model'.length).trim()
+    if (arg.length === 0) {
+      const state = this.chatState(message)
+      const fallback = this.services.defaultSelection()
+      const current = state.selection ?? `${fallback.provider}/${fallback.model}`
+      const currentText = typeof current === 'string' ? current : `${current.provider}/${current.model}`
+      const lines = [`Current model: ${currentText}`]
+      try {
+        const models = await this.services.listModels()
+        if (models.length > 0) {
+          lines.push('', 'Available:', ...models.slice(0, 20).map(m => `• ${m.provider}/${m.model} — ${m.name}`))
+          if (models.length > 20) lines.push(`…and ${models.length - 20} more`)
+        }
+      } catch {
+        lines.push('(model list unavailable)')
+      }
+      await this.io.send(message.chatId, lines.join('\n'))
+      return
+    }
+    // Hermes-style resolution: full "provider/model" switches directly; a bare
+    // name fuzzy-matches model ids/names (e.g. `/model flash` → the one route
+    // whose id contains "flash"). Zero or many matches list the candidates.
+    let provider: string
+    let model: string
+    if (arg.includes('/')) {
+      const slash = arg.indexOf('/')
+      provider = arg.slice(0, slash).trim()
+      model = arg.slice(slash + 1).trim()
+      if (provider.length === 0 || model.length === 0) {
+        await this.io.send(message.chatId, 'Use `/model <provider/model>` — e.g. `/model opencode-go/deepseek-v4-flash` — or a bare name like `/model flash`.')
+        return
+      }
+    } else {
+      const needle = arg.toLowerCase()
+      const matches = (await this.services.listModels())
+        .filter(m => m.model.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle))
+      if (matches.length === 0) {
+        await this.io.send(message.chatId, `No model matches "${arg}". Send /model to list available models.`)
+        return
+      }
+      if (matches.length > 1) {
+        await this.io.send(message.chatId, `"${arg}" is ambiguous:\n${matches.slice(0, 10).map(m => `• ${m.provider}/${m.model}`).join('\n')}`)
+        return
+      }
+      const picked = matches.at(0)
+      if (picked === undefined) return
+      provider = picked.provider
+      model = picked.model
+    }
+    try {
+      const resolved = await this.services.resolveSelection(provider, model)
+      const state = this.chatState(message)
+      state.selection = resolved
+      const live = state.agent
+      if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
+      await this.io.send(message.chatId, `Model set to ${resolved.provider}/${resolved.model}.`)
+    } catch (error) {
+      await this.io.send(message.chatId, `Model switch failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private async runTurn(message: InboundMessage, state: ChatState): Promise<void> {
@@ -180,9 +266,10 @@ export class TelegramRelay {
     // mirroring hermes' draft frames. The final fold below is authoritative;
     // edits are best-effort and never fail the turn.
     let draftId: number | undefined
+    let draftText = ''
     const sendDraft = async (text: string): Promise<void> => {
       const body = text.trim()
-      if (body.length === 0) return
+      if (body.length === 0 || body === draftText) return
       try {
         if (draftId === undefined) {
           const sent = await this.io.send(message.chatId, body)
@@ -190,9 +277,11 @@ export class TelegramRelay {
         } else {
           await this.io.edit(message.chatId, draftId, body)
         }
+        draftText = body
       } catch {
-        // A rejected edit keeps the last visible draft; the final fold still sends.
-        draftId = undefined
+        // A rejected edit keeps the draft bubble: "message is not modified"
+        // (identical text) and transient rate limits must not reset draftId,
+        // or the next tick would send a duplicate bubble instead of editing.
       }
     }
 
@@ -247,6 +336,7 @@ export class TelegramRelay {
         ...(this.options.presetId === undefined ? {} : { agentPreset: this.options.presetId }),
         origin: 'telegram',
       },
+      selection: state.selection,
       setup: this.options.setupFactory?.(),
     })
     state.agent = handle.agent
@@ -266,7 +356,7 @@ export class TelegramRelay {
     const key = this.keyOf(message)
     let state = this.chats.get(key)
     if (state === undefined) {
-      state = { generation: 0, chain: Promise.resolve(), agent: undefined }
+      state = { generation: 0, chain: Promise.resolve(), agent: undefined, selection: undefined }
       this.chats.set(key, state)
     }
     return state

@@ -104,7 +104,16 @@ export class TelegramBotApiClient {
     pollTimeoutSeconds: number,
     signal?: AbortSignal,
   ): Promise<TelegramUpdate[]> {
-    return this.call('getUpdates', { offset, timeout: pollTimeoutSeconds, allowed_updates: ['message'] }, (pollTimeoutSeconds + 10) * 1000, signal)
+    const raw = await this.call<Array<Record<string, unknown>>>('getUpdates', { offset, timeout: pollTimeoutSeconds, allowed_updates: ['message'] }, (pollTimeoutSeconds + 10) * 1000, signal)
+    // The wire format is snake_case (`update_id`); the channel type is camelCase.
+    // Without this mapping `updateId` reads undefined, the next offset becomes
+    // NaN, and every poll re-fetches the whole queue — the reply-storm bug.
+    return raw.map(update => ({
+      ...update,
+      // Real Telegram payloads are snake_case; camelCase keeps hand-built
+      // fixtures and internal callers working unchanged.
+      updateId: Number((update as { updateId?: number }).updateId ?? update.update_id),
+    }))
   }
 
   /**

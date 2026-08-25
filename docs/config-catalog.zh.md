@@ -401,6 +401,8 @@ export type Config = LocalConfig
 
 ## `@deepseek-ai/dsh-channel-telegram`
 
+Requires: `agents` · `credentials` · `sessions` · `agentDefaultModel`
+
 ```ts config-catalog
 /** Plugin config: connection and access control for the bot (all defaulted). */
 export interface Config {

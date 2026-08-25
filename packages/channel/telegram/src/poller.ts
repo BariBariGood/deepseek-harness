@@ -22,6 +22,8 @@ export async function pollMessages(options: {
   client: TelegramBotApiClient
   /** Invoked once per normalized text message, in arrival order. */
   onMessage: (message: InboundMessage) => Promise<void>
+  /** Invoked when one message's handler throws; the loop continues past it. */
+  onMessageError?: ((message: InboundMessage, error: unknown) => void) | undefined
   /** Long-poll hang budget per request, in seconds. */
   pollTimeoutSeconds?: number | undefined
   /** Ceiling for the exponential reconnect backoff, in milliseconds. */
@@ -53,10 +55,30 @@ export async function pollMessages(options: {
       continue
     }
     for (const update of batch) {
+      // A non-finite update id would make the next getUpdates offset NaN (sent
+      // as null = 0), re-fetching the whole queue forever. Skip and log loudly.
+      if (!Number.isFinite(update.updateId)) {
+        options.onMessageError?.(
+          {
+            text: '', chatId: '0', chatType: 'private', chatTitle: undefined,
+            senderId: '0', senderName: 'telegram', threadId: undefined, messageId: 0,
+          },
+          new Error(`update with non-finite updateId: ${JSON.stringify(update).slice(0, 120)}`),
+        )
+        continue
+      }
       offset = update.updateId + 1
       const message = normalizeUpdate(update)
       if (message === undefined) continue
-      await options.onMessage(message)
+      try {
+        await options.onMessage(message)
+      } catch (error) {
+        // One bad message must not kill the loop: the offset is already
+        // advanced past this update, so a thrown handler would otherwise be
+        // retried forever (and re-answer an already-replied message after a
+        // restart). Log and move on; the relay owns per-chat error replies.
+        options.onMessageError?.(message, error)
+      }
     }
   }
 }
