@@ -40,10 +40,37 @@ export interface TelegramMessage {
   replyToMessage?: { messageId: number; text?: string | undefined } | undefined
 }
 
-/** One long-polling update; only `message` matters to this channel. */
+/** One button in an inline keyboard; `callbackData` is 1-64 bytes. */
+export interface TelegramInlineButton {
+  label: string
+  callbackData: string
+}
+
+/** A sent message carrying an inline keyboard, for later edit. */
+export interface SentKeyboardMessage {
+  messageId: number
+}
+
+/**
+ * A pressed inline-keyboard button (`callback_query` update): who tapped,
+ * where, which message shows the keyboard, and the opaque data payload.
+ */
+export interface TelegramCallbackQuery {
+  callbackId: string
+  fromId: string
+  chatId: TelegramChatId
+  /** Forum-topic thread id when the keyboard's message lives inside a topic. */
+  threadId: number | undefined
+  /** The keyboard-bearing message this press belongs to. */
+  messageId: number
+  data: string
+}
+
+/** One long-polling update; only `message` and `callback_query` matter. */
 export interface TelegramUpdate {
   updateId: number
   message?: TelegramMessage | undefined
+  callbackQuery?: TelegramCallbackQuery | undefined
 }
 
 /** Result envelope every Bot API JSON response shares. */

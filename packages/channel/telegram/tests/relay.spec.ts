@@ -78,6 +78,8 @@ describe('TelegramRelay', () => {
     const sent: { chatId: TelegramChatId; text: string }[] = []
     const edits: { chatId: TelegramChatId; messageId: number; text: string }[] = []
     const typingCalls: TelegramChatId[] = []
+    const keyboards: { chatId: TelegramChatId; text: string; keyboard: { label: string; callbackData: string }[][] }[] = []
+    const answered: string[] = []
 
     const relay = new TelegramRelay(
       {},
@@ -113,13 +115,26 @@ describe('TelegramRelay', () => {
           sent.push({ chatId, text })
           return { messageId: sent.length }
         },
-        edit: async () => {},
+        sendKeyboard: async (chatId, text, keyboard) => {
+          keyboards.push({ chatId, text, keyboard: keyboard.map(row => row.map(button => ({ ...button }))) })
+          sent.push({ chatId, text })
+          return { messageId: sent.length }
+        },
+        edit: async (chatId, messageId, text) => {
+          edits.push({ chatId, messageId, text })
+        },
+        clearKeyboard: async (chatId, messageId, text) => {
+          edits.push({ chatId, messageId, text })
+        },
+        answerCallback: async (callbackId) => {
+          answered.push(callbackId)
+        },
         typing: async (chatId) => {
           typingCalls.push(chatId)
         },
       },
     )
-    return { relay, sent, edits, typingCalls, created, scripted, followupsOf: () => scripted.followups }
+    return { relay, sent, edits, typingCalls, created, scripted, followupsOf: () => scripted.followups, keyboards, answered }
   }
 
   it('creates a deterministic session and relays the final text', async () => {
@@ -163,13 +178,51 @@ describe('TelegramRelay', () => {
     expect(bench0.sent.at(-1)?.text).toContain('/model')
   })
 
-  it('lists the current model and available routes on /model', async () => {
+  it('answers bare /model with a tappable route menu', async () => {
     const bench0 = bench()
     await bench0.relay.handle(message('/model'))
     expect(bench0.created).toHaveLength(0)
     const text = bench0.sent.at(-1)?.text ?? ''
     expect(text).toContain('Current model: opencode-go/deepseek-v4-flash')
-    expect(text).toContain('zen-go/ox-alpha-free')
+    const menu = bench0.keyboards.at(-1)
+    expect(menu).toBeDefined()
+    const labels = menu!.keyboard.map(row => row[0]?.label ?? '')
+    expect(labels.some(label => label.startsWith('✓ '))).toBe(true)
+    const datas = menu!.keyboard.map(row => row[0]?.callbackData ?? '')
+    expect(datas).toContain('model:zen-go/ox-alpha-free')
+  })
+
+  it('switches on an authorized button press and collapses the menu', async () => {
+    const bench0 = bench()
+    await bench0.relay.handleCallback({
+      callbackId: 'cb1', fromId: '555', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'model:zen-go/ox-alpha-free',
+    })
+    expect(bench0.answered).toContain('cb1')
+    expect(bench0.edits.at(-1)?.text).toBe('Model set to zen-go/ox-alpha-free.')
+    // The switch persists for the chat's next turn.
+    await bench0.relay.handle(message('/model flash'))
+    expect(bench0.sent.at(-1)?.text).toBe('Model set to opencode-go/deepseek-v4-flash.')
+  })
+
+  it('rejects button presses from non-allowed users', async () => {
+    const bench0 = bench()
+    await bench0.relay.handleCallback({
+      callbackId: 'cb2', fromId: '999', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'model:zen-go/ox-alpha-free',
+    })
+    expect(bench0.answered).toContain('cb2')
+    expect(bench0.edits).toHaveLength(0)
+  })
+
+  it('toasts a failure when the pressed route does not resolve', async () => {
+    const bench0 = bench()
+    await bench0.relay.handleCallback({
+      callbackId: 'cb3', fromId: '555', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'model:missing/nope',
+    })
+    expect(bench0.answered).toContain('cb3')
+    expect(bench0.edits).toHaveLength(0)
   })
 
   it('switches by full provider/model and by a unique bare name', async () => {
@@ -234,7 +287,10 @@ describe('TelegramRelay', () => {
           sent.push({ chatId, text })
           return { messageId: sent.length }
         },
+        sendKeyboard: async () => ({ messageId: 0 }),
         edit: async () => {},
+        clearKeyboard: async () => {},
+        answerCallback: async () => {},
         typing: async () => {},
       },
     )
@@ -317,9 +373,12 @@ describe('TelegramRelay draft streaming', () => {
           sent.push({ chatId, text })
           return { messageId: sent.length }
         },
+        sendKeyboard: async () => ({ messageId: 0 }),
         edit: async (chatId, messageId, text) => {
           edits.push({ chatId, messageId, text })
         },
+        clearKeyboard: async () => {},
+        answerCallback: async () => {},
         typing: async () => {},
       },
     )

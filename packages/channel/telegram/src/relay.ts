@@ -11,7 +11,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionOrigin } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session'
-import type { InboundMessage } from './types.ts'
+import type { InboundMessage, TelegramCallbackQuery } from './types.ts'
 
 /** Minimal agent face the relay drives (structural view of the real handle). */
 export interface RelayAgent {
@@ -64,11 +64,17 @@ const STREAM_EDIT_INTERVAL_MS = 1_500
 const HELP_TEXT = [
   'DSH Telegram channel:',
   '/new — start a fresh conversation',
-  '/model — show the current model',
-  '/model <provider/model> — switch model',
+  '/model — pick a model (buttons)',
+  '/model <provider/model> — switch by name',
   '/help — show this help',
   'Anything else is sent to the agent.',
 ].join('\n')
+
+/** Callback-data prefix marking a model-menu press; the rest is `provider/model`. */
+const MODEL_PICK_PREFIX = 'model:'
+
+/** Rows-per-page in the `/model` button menu; one route per row, tap-friendly. */
+const MODEL_MENU_PAGE = 12
 
 /**
  * True when `/new` or `/reset` asks for a fresh conversation. Both exist for
@@ -137,7 +143,13 @@ export class TelegramRelay {
     private readonly config: RelayConfig,
     private readonly io: {
       send(chatId: InboundMessage['chatId'], text: string): Promise<{ messageId: number }>
+      /** Send with an inline keyboard (the `/model` picker). */
+      sendKeyboard(chatId: InboundMessage['chatId'], text: string, keyboard: readonly { label: string; callbackData: string }[][]): Promise<{ messageId: number }>
       edit(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
+      /** Collapse a keyboard-bearing message's markup after a pick. */
+      clearKeyboard(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
+      /** Acknowledge a press so Telegram stops the client-side spinner. */
+      answerCallback(callbackId: string, toast?: string): Promise<void>
       typing(chatId: InboundMessage['chatId']): Promise<void>
       logger?: { info(message: string): void; warn(message: string): void; error(message: string): void }
     },
@@ -186,6 +198,50 @@ export class TelegramRelay {
   }
 
   /**
+   * Route one authorized inline-keyboard press: only `model:<provider>/<model>`
+   * payloads are meaningful today. The menu message collapses to plain text
+   * showing the pick, and the presser gets a toast.
+   * @param query - The normalized callback query from the poller.
+   */
+  async handleCallback(query: TelegramCallbackQuery): Promise<void> {
+    if (!query.fromId || !this.config.allowedUserIds.includes(query.fromId)) {
+      this.io.logger?.warn(`telegram: rejected callback from non-allowed user ${query.fromId}`)
+      await this.io.answerCallback(query.callbackId).catch(() => {})
+      return
+    }
+    if (!query.data.startsWith(MODEL_PICK_PREFIX)) {
+      await this.io.answerCallback(query.callbackId).catch(() => {})
+      return
+    }
+    const route = query.data.slice(MODEL_PICK_PREFIX.length)
+    const slash = route.indexOf('/')
+    if (slash <= 0 || slash === route.length - 1) {
+      await this.io.answerCallback(query.callbackId, 'Malformed model pick').catch(() => {})
+      return
+    }
+    try {
+      const resolved = await this.services.resolveSelection(route.slice(0, slash), route.slice(slash + 1))
+      const state = this.chatStateOf(query.chatId, query.threadId)
+      state.selection = resolved
+      const live = state.agent
+      if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
+      // Collapse the menu into a receipt; the keyboard disappears.
+      await this.io.clearKeyboard(query.chatId, query.messageId, `Model set to ${resolved.provider}/${resolved.model}.`)
+      await this.io.answerCallback(query.callbackId).catch(() => {})
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      await this.io.answerCallback(query.callbackId, `Switch failed: ${reason}`).catch(() => {})
+    }
+  }
+
+  private chatStateOf(chatId: InboundMessage['chatId'], threadId: number | undefined): ChatState {
+    return this.chatState({
+      text: '', chatId, chatType: 'private', chatTitle: undefined,
+      senderId: '0', senderName: 'telegram', threadId, messageId: 0,
+    })
+  }
+
+  /**
    * `/model` — show the chat's current model; `/model <provider/model>` —
    * validate the route through the LLM seam, then apply it to this chat's
    * live agent (and every future one until `/new` or another switch).
@@ -196,19 +252,31 @@ export class TelegramRelay {
     if (arg.length === 0) {
       const state = this.chatState(message)
       const fallback = this.services.defaultSelection()
-      const current = state.selection ?? `${fallback.provider}/${fallback.model}`
-      const currentText = typeof current === 'string' ? current : `${current.provider}/${current.model}`
-      const lines = [`Current model: ${currentText}`]
+      const currentText = state.selection === undefined
+        ? `${fallback.provider}/${fallback.model}`
+        : `${state.selection.provider}/${state.selection.model}`
+      let routes: readonly { provider: string; model: string; name: string }[] = []
       try {
-        const models = await this.services.listModels()
-        if (models.length > 0) {
-          lines.push('', 'Available:', ...models.slice(0, 20).map(m => `• ${m.provider}/${m.model} — ${m.name}`))
-          if (models.length > 20) lines.push(`…and ${models.length - 20} more`)
-        }
+        routes = await this.services.listModels()
       } catch {
-        lines.push('(model list unavailable)')
+        // Fall through: a listing failure still shows the current route.
       }
-      await this.io.send(message.chatId, lines.join('\n'))
+      const header = `Current model: ${currentText}\n\nPick a model:`
+      // Hermes-style picker: one tappable button per route. Callback data is
+      // `model:<provider>/<model>`; Telegram caps it at 64 bytes, so oversized
+      // routes fall back to typing the name.
+      const keyboard: { label: string; callbackData: string }[][] = []
+      for (const route of routes.slice(0, MODEL_MENU_PAGE)) {
+        const data = `${MODEL_PICK_PREFIX}${route.provider}/${route.model}`
+        if (data.length > 64) continue
+        const mark = `${route.provider}/${route.model}` === currentText ? '✓ ' : ''
+        keyboard.push([{ label: `${mark}${route.model} · ${route.name}`, callbackData: data }])
+      }
+      if (keyboard.length === 0) {
+        await this.io.send(message.chatId, header.length > 0 && routes.length === 0 ? `${header}\n(no models listed — type /model <provider/model>)` : header)
+        return
+      }
+      await this.io.sendKeyboard(message.chatId, header, keyboard)
       return
     }
     // Hermes-style resolution: full "provider/model" switches directly; a bare

@@ -182,8 +182,18 @@ export function apply(ctx: Context, config: Config): void {
         },
         {
           send: async (chatId, text) => await client.sendMessage(chatId, text),
+          sendKeyboard: async (chatId, text, keyboard) => await client.sendMessage(chatId, text, keyboard),
           edit: async (chatId, messageId, text) => {
             await client.editMessageText(chatId, messageId, text)
+          },
+          clearKeyboard: async (chatId, messageId, text) => {
+            // A keyboard-less edit that lands on an already-collapsed menu is
+            // a no-op error ("message is not modified"); either way the pick
+            // already succeeded, so this stays best-effort.
+            await client.editMessageMarkup(chatId, messageId, text).catch(() => {})
+          },
+          answerCallback: async (callbackId, toast) => {
+            await client.answerCallbackQuery(callbackId, toast).catch(() => {})
           },
           typing: chatId => client.sendChatAction(chatId, 'typing'),
           logger: ctx.logger,
@@ -195,6 +205,7 @@ export function apply(ctx: Context, config: Config): void {
         client,
         pollTimeoutSeconds,
         signal: controller.signal,
+        onCallback: query => relay.handleCallback(query),
         onMessage: (message) => {
           if (!isAddressedToChannel(message, [me.username.toLowerCase()])) return Promise.resolve()
           // Not awaited: the relay chains turns per chat, so ordering is kept,

@@ -2,7 +2,7 @@
 
 import { TelegramApiError, TelegramBotApiClient } from './bot-api.ts'
 import { normalizeUpdate } from './inbound.ts'
-import type { InboundMessage } from './types.ts'
+import type { InboundMessage, TelegramCallbackQuery } from './types.ts'
 
 /**
  * Consume updates forever until stopped.
@@ -22,6 +22,8 @@ export async function pollMessages(options: {
   client: TelegramBotApiClient
   /** Invoked once per normalized text message, in arrival order. */
   onMessage: (message: InboundMessage) => Promise<void>
+  /** Invoked once per inline-keyboard button press, in arrival order. */
+  onCallback?: ((query: TelegramCallbackQuery) => Promise<void>) | undefined
   /** Invoked when one message's handler throws; the loop continues past it. */
   onMessageError?: ((message: InboundMessage, error: unknown) => void) | undefined
   /** Long-poll hang budget per request, in seconds. */
@@ -68,6 +70,24 @@ export async function pollMessages(options: {
         continue
       }
       offset = update.updateId + 1
+      if (update.callbackQuery !== undefined) {
+        try {
+          await options.onCallback?.(update.callbackQuery)
+        } catch (error) {
+          // Same contract as onMessage: the offset has advanced, so a thrown
+          // handler must not loop the press forever. Log and continue.
+          options.onMessageError?.(
+            {
+              text: '', chatId: String(update.callbackQuery.chatId), chatType: 'private',
+              chatTitle: undefined, senderId: update.callbackQuery.fromId,
+              senderName: 'telegram', threadId: update.callbackQuery.threadId,
+              messageId: update.callbackQuery.messageId,
+            },
+            error,
+          )
+        }
+        continue
+      }
       const message = normalizeUpdate(update)
       if (message === undefined) continue
       try {

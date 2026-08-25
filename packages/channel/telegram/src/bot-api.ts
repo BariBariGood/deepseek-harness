@@ -1,7 +1,7 @@
 /** Minimal fetch-based Telegram Bot API client: long polling plus the send face the channel needs. */
 
 import type {
-  TelegramApiResponse, TelegramChatId, TelegramUpdate,
+  TelegramApiResponse, TelegramCallbackQuery, TelegramChatId, TelegramInlineButton, TelegramUpdate,
 } from './types.ts'
 
 /** The Bot API base URL; an external service spec, not a tunable. */
@@ -27,6 +27,27 @@ export class TelegramApiError extends Error {
 
 function queryOf(token: string): string {
   return `${TELEGRAM_API_BASE}/bot${token}`
+}
+
+/**
+ * Reduce one raw `callback_query` object to the channel's camelCase shape.
+ * Returns undefined for presses without a usable message or data payload —
+ * old keyboards in chats the bot left, or `game_short_press`-style events.
+ */
+function normalizeCallbackQuery(raw: Record<string, unknown>): TelegramCallbackQuery | undefined {
+  const id = typeof raw.id === 'string' ? raw.id : undefined
+  const data = typeof raw.data === 'string' ? raw.data : undefined
+  const from = raw.from as { id?: unknown } | undefined
+  const message = raw.message as { message_id?: unknown; chat?: { id?: unknown }; message_thread_id?: unknown } | undefined
+  if (id === undefined || data === undefined || message?.chat?.id === undefined) return undefined
+  return {
+    callbackId: id,
+    fromId: typeof from?.id === 'number' ? String(from.id) : '',
+    chatId: message.chat.id as TelegramChatId,
+    threadId: typeof message.message_thread_id === 'number' ? message.message_thread_id : undefined,
+    messageId: Number(message.message_id),
+    data,
+  }
 }
 
 /**
@@ -104,15 +125,16 @@ export class TelegramBotApiClient {
     pollTimeoutSeconds: number,
     signal?: AbortSignal,
   ): Promise<TelegramUpdate[]> {
-    const raw = await this.call<Array<Record<string, unknown>>>('getUpdates', { offset, timeout: pollTimeoutSeconds, allowed_updates: ['message'] }, (pollTimeoutSeconds + 10) * 1000, signal)
-    // The wire format is snake_case (`update_id`); the channel type is camelCase.
-    // Without this mapping `updateId` reads undefined, the next offset becomes
-    // NaN, and every poll re-fetches the whole queue — the reply-storm bug.
+    const raw = await this.call<Array<Record<string, unknown>>>('getUpdates', { offset, timeout: pollTimeoutSeconds, allowed_updates: ['message', 'callback_query'] }, (pollTimeoutSeconds + 10) * 1000, signal)
+    // The wire format is snake_case (`update_id`, `callback_query`, `id`,
+    // `from.id`, `message.message_id`, `message.chat.id`, `data`); the channel
+    // type is camelCase. Without this mapping `updateId` reads undefined, the
+    // next offset becomes NaN, and every poll re-fetches the whole queue —
+    // the reply-storm bug.
     return raw.map(update => ({
       ...update,
-      // Real Telegram payloads are snake_case; camelCase keeps hand-built
-      // fixtures and internal callers working unchanged.
       updateId: Number((update as { updateId?: number }).updateId ?? update.update_id),
+      callbackQuery: normalizeCallbackQuery((update as { callback_query?: Record<string, unknown> }).callback_query ?? {}),
     }))
   }
 
@@ -128,15 +150,57 @@ export class TelegramBotApiClient {
    * Send one plain-text message.
    * @param chatId - Destination chat (numeric or `@username`).
    * @param text - Message body; link previews are disabled.
+   * @param keyboard - Optional inline keyboard under the message.
    * @returns The platform message id of the sent message.
    */
-  async sendMessage(chatId: TelegramChatId, text: string): Promise<{ messageId: number }> {
+  async sendMessage(
+    chatId: TelegramChatId,
+    text: string,
+    keyboard?: readonly TelegramInlineButton[][],
+  ): Promise<{ messageId: number }> {
     const result = await this.call<{ message_id: number }>('sendMessage', {
       chat_id: chatId,
       text,
       link_preview_options: { is_disabled: true },
+      ...(keyboard === undefined ? {} : {
+        reply_markup: {
+          inline_keyboard: keyboard.map(row => row.map(button => ({ text: button.label, callback_data: button.callbackData }))),
+        },
+      }),
     }, undefined)
     return { messageId: result.message_id }
+  }
+
+  /**
+   * Answer a pressed inline button: stops Telegram's client-side spinner and
+   * optionally shows a toast on the sender's screen. Best-effort by callers.
+   * @param callbackQueryId - The `id` of the pressed `callback_query`.
+   * @param toast - Optional text shown as an alert at the top of the chat.
+   * @returns Resolves when the acknowledgement is accepted.
+   */
+  async answerCallbackQuery(callbackQueryId: string, toast?: string): Promise<void> {
+    await this.call('answerCallbackQuery', {
+      callback_query_id: callbackQueryId,
+      ...(toast === undefined ? {} : { text: toast, show_alert: false }),
+    }, undefined)
+  }
+
+  /**
+   * Replace a keyboard-bearing message's text and reply markup in one call;
+   * this is how the model menu collapses after a pick.
+   * @param chatId - Destination chat (numeric or `@username`).
+   * @param messageId - Platform message id carrying the keyboard.
+   * @param text - The replacement body.
+   * @returns Resolves when the edit is accepted.
+   */
+  async editMessageMarkup(chatId: TelegramChatId, messageId: number, text: string): Promise<void> {
+    await this.call('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      link_preview_options: { is_disabled: true },
+      reply_markup: { inline_keyboard: [] },
+    }, undefined)
   }
 
   /**
