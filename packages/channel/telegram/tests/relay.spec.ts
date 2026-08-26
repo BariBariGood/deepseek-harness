@@ -70,6 +70,8 @@ describe('TelegramRelay', () => {
     existingLive?: object | undefined
     replies?: string[] | undefined
     reason?: ScriptedEndReason | undefined
+    /** How many fake routes listModels returns (paging tests). */
+    modelCount?: number | undefined
   } = {}) {
     const created: { sessionId: string; meta: { cwd: string } }[] = []
     const liveAgents = new Map<string, unknown>()
@@ -96,10 +98,19 @@ describe('TelegramRelay', () => {
           return { agent: fresh.agent }
         },
         getLiveAgent: sessionId => liveAgents.get(String(sessionId)),
-        listModels: async () => [
-          { provider: 'opencode-go', model: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-          { provider: 'zen-go', model: 'ox-alpha-free', name: 'Ox Alpha' },
-        ],
+        listModels: async () => {
+          if ((options.modelCount ?? 0) > 0) {
+            return Array.from({ length: options.modelCount! }, (_, index) => ({
+              provider: 'opencode-go',
+              model: `model-${String(index).padStart(2, '0')}`,
+              name: `Model ${index}`,
+            }))
+          }
+          return [
+            { provider: 'opencode-go', model: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+            { provider: 'zen-go', model: 'ox-alpha-free', name: 'Ox Alpha' },
+          ]
+        },
         resolveSelection: async (provider, model) => {
           if (provider === 'missing') throw new Error('unknown provider')
           return { provider, model }
@@ -123,8 +134,9 @@ describe('TelegramRelay', () => {
         edit: async (chatId, messageId, text) => {
           edits.push({ chatId, messageId, text })
         },
-        clearKeyboard: async (chatId, messageId, text) => {
+        editMessage: async (chatId, messageId, text, keyboard) => {
           edits.push({ chatId, messageId, text })
+          keyboards.push({ chatId, text, keyboard: keyboard.map(row => row.map(button => ({ ...button }))) })
         },
         answerCallback: async (callbackId) => {
           answered.push(callbackId)
@@ -154,11 +166,16 @@ describe('TelegramRelay', () => {
     expect(bench0.sent.map(entry => entry.text)).toEqual(['echo: first', 'echo: second'])
   })
 
-  it('rejects messages from users outside the allowlist', async () => {
+  it('rejects messages from users outside the allowlist with a self-service notice', async () => {
     const bench0 = bench({ allowedUserIds: [] })
     await bench0.relay.handle(message('hello'))
     expect(bench0.created).toHaveLength(0)
-    expect(bench0.sent).toHaveLength(0)
+    const notice = bench0.sent.at(-1)?.text ?? ''
+    expect(notice).toContain('not on this bot\'s allowlist')
+    expect(notice).toContain('555')
+    // The notice is once per sender, not a reply loop.
+    await bench0.relay.handle(message('hello again'))
+    expect(bench0.sent).toHaveLength(1)
   })
 
   it('answers /new with a confirmation and starts a fresh generation', async () => {
@@ -178,7 +195,7 @@ describe('TelegramRelay', () => {
     expect(bench0.sent.at(-1)?.text).toContain('/model')
   })
 
-  it('answers bare /model with a tappable route menu', async () => {
+  it('answers bare /model with a provider-level menu', async () => {
     const bench0 = bench()
     await bench0.relay.handle(message('/model'))
     expect(bench0.created).toHaveLength(0)
@@ -186,42 +203,78 @@ describe('TelegramRelay', () => {
     expect(text).toContain('Current model: opencode-go/deepseek-v4-flash')
     const menu = bench0.keyboards.at(-1)
     expect(menu).toBeDefined()
-    const labels = menu!.keyboard.map(row => row[0]?.label ?? '')
-    expect(labels.some(label => label.startsWith('✓ '))).toBe(true)
     const datas = menu!.keyboard.map(row => row[0]?.callbackData ?? '')
-    expect(datas).toContain('model:zen-go/ox-alpha-free')
+    expect(datas).toContain('modelp:opencode-go')
+    expect(datas).toContain('modelp:zen-go')
+    const marked = menu!.keyboard.find(row => row[0]?.label.startsWith('✓ '))
+    expect(marked?.[0]?.label).toContain('opencode-go')
   })
 
-  it('switches on an authorized button press and collapses the menu', async () => {
+  it('drills into a provider, pages, and switches on a model press', async () => {
     const bench0 = bench()
+    // Level one → provider submenu.
+    await bench0.relay.handleCallback({
+      callbackId: 'cb0', fromId: '555', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'modelp:zen-go',
+    })
+    expect(bench0.answered).toContain('cb0')
+    const menu = bench0.keyboards.at(-1)
+    expect(menu?.keyboard.map(row => row[0]?.callbackData)).toContain('model:zen-go/ox-alpha-free')
+    expect(menu?.keyboard.at(-1)?.some(button => button.label === '↩ Providers')).toBe(true)
+    // Level two → commit the pick; keyboard collapses to empty.
     await bench0.relay.handleCallback({
       callbackId: 'cb1', fromId: '555', chatId: 100, threadId: undefined,
       messageId: 7, data: 'model:zen-go/ox-alpha-free',
     })
     expect(bench0.answered).toContain('cb1')
     expect(bench0.edits.at(-1)?.text).toBe('Model set to zen-go/ox-alpha-free.')
+    expect(bench0.keyboards.at(-1)?.keyboard ?? []).toEqual([])
     // The switch persists for the chat's next turn.
     await bench0.relay.handle(message('/model flash'))
     expect(bench0.sent.at(-1)?.text).toBe('Model set to opencode-go/deepseek-v4-flash.')
   })
 
+  it('pages through many models with Back and Next', async () => {
+    const bench0 = bench({ modelCount: 20 })
+    await bench0.relay.handleCallback({
+      callbackId: 'cb2', fromId: '555', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'modelpage:opencode-go/1',
+    })
+    const text = bench0.edits.at(-1)?.text ?? ''
+    expect(text).toContain('page 2/3')
+    const menu = bench0.keyboards.at(-1)
+    // Middle page: Back and Next both present, Providers centered between them.
+    expect(menu?.keyboard.at(-1)?.map(button => button.label)).toEqual(['‹ Back', '↩ Providers', 'Next ›'])
+  })
+
+  it('returns to the provider level from the ↩ Providers button', async () => {
+    const bench0 = bench()
+    await bench0.relay.handleCallback({
+      callbackId: 'cb3', fromId: '555', chatId: 100, threadId: undefined,
+      messageId: 7, data: 'modelroot:',
+    })
+    expect(bench0.answered).toContain('cb3')
+    const datas = (bench0.keyboards.at(-1)?.keyboard ?? []).map(row => row[0]?.callbackData ?? '')
+    expect(datas.some(data => data.startsWith('modelp:'))).toBe(true)
+  })
+
   it('rejects button presses from non-allowed users', async () => {
     const bench0 = bench()
     await bench0.relay.handleCallback({
-      callbackId: 'cb2', fromId: '999', chatId: 100, threadId: undefined,
+      callbackId: 'cb4', fromId: '999', chatId: 100, threadId: undefined,
       messageId: 7, data: 'model:zen-go/ox-alpha-free',
     })
-    expect(bench0.answered).toContain('cb2')
+    expect(bench0.answered).toContain('cb4')
     expect(bench0.edits).toHaveLength(0)
   })
 
   it('toasts a failure when the pressed route does not resolve', async () => {
     const bench0 = bench()
     await bench0.relay.handleCallback({
-      callbackId: 'cb3', fromId: '555', chatId: 100, threadId: undefined,
+      callbackId: 'cb5', fromId: '555', chatId: 100, threadId: undefined,
       messageId: 7, data: 'model:missing/nope',
     })
-    expect(bench0.answered).toContain('cb3')
+    expect(bench0.answered).toContain('cb5')
     expect(bench0.edits).toHaveLength(0)
   })
 
@@ -289,7 +342,7 @@ describe('TelegramRelay', () => {
         },
         sendKeyboard: async () => ({ messageId: 0 }),
         edit: async () => {},
-        clearKeyboard: async () => {},
+        editMessage: async () => {},
         answerCallback: async () => {},
         typing: async () => {},
       },
@@ -377,7 +430,7 @@ describe('TelegramRelay draft streaming', () => {
         edit: async (chatId, messageId, text) => {
           edits.push({ chatId, messageId, text })
         },
-        clearKeyboard: async () => {},
+        editMessage: async () => {},
         answerCallback: async () => {},
         typing: async () => {},
       },

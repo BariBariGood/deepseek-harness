@@ -13,8 +13,8 @@ Each chat key (`<chat>` direct, `<chat>:<topic>` for forum topics) maps determin
    - the app's **Models page** credential store under the ref `TELEGRAM_BOT_TOKEN`, or
    - `TELEGRAM_BOT_TOKEN=…` in the launch environment.
 3. Mount the plugin (it ships in the default surface composition) and start the app; the startup log prints `polling as @<username> for N allowed user(s)`.
-4. Message the bot from your own account. The allowlist denies everyone by default, so add yourself: find your numeric id (send any message, then read it from the server log's rejected-update line, or ask @userinfobot) and put it in the plugin's `allowedUserIds` config list. Restart once.
-5. Sanity check in chat: `/help` lists commands, `/model` shows the active model plus every provider/model route the deployment exposes, `/model <provider/model>` switches this chat (bare names like `/model flash` fuzzy-match; ambiguity lists candidates), `/new` starts a fresh conversation.
+4. Message the bot from your own account. The allowlist denies everyone by default with a one-time reply that tells you your numeric id — add it to the plugin's `allowedUserIds` config list and restart once (or grab it from the server log's rejected-update line, or ask @userinfobot).
+5. Sanity check in chat: `/help` lists commands, `/model` opens a two-level picker (provider → model, paged with ‹ Back / Next ›), tap to switch this chat (`/model <provider/model>` and bare-name fuzzy matching still work typed), `/new` starts a fresh conversation. The commands also autocomplete from Telegram's menu button.
 
 ## Model Experience
 

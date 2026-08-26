@@ -186,11 +186,11 @@ export function apply(ctx: Context, config: Config): void {
           edit: async (chatId, messageId, text) => {
             await client.editMessageText(chatId, messageId, text)
           },
-          clearKeyboard: async (chatId, messageId, text) => {
-            // A keyboard-less edit that lands on an already-collapsed menu is
-            // a no-op error ("message is not modified"); either way the pick
-            // already succeeded, so this stays best-effort.
-            await client.editMessageMarkup(chatId, messageId, text).catch(() => {})
+          editMessage: async (chatId, messageId, text, keyboard) => {
+            // "message is not modified" lands when a press re-renders the same
+            // page (double-tap, stale keyboard); the pick state is unaffected,
+            // so this stays best-effort.
+            await client.editMessageWithMarkup(chatId, messageId, text, keyboard).catch(() => {})
           },
           answerCallback: async (callbackId, toast) => {
             await client.answerCallbackQuery(callbackId, toast).catch(() => {})
@@ -201,6 +201,16 @@ export function apply(ctx: Context, config: Config): void {
       )
 
       ctx.logger.info(`channel-telegram: polling as @${me.username} for ${allowedUserIds.length} allowed user(s)`)
+      // Publish the slash-command menu once per start: Telegram shows these in
+      // the input's autocomplete and the menu button. Best-effort — an older
+      // cached menu keeps working when the call fails.
+      await client.setMyCommands([
+        { command: 'new', description: 'Start a fresh conversation' },
+        { command: 'model', description: 'Pick the model for this chat' },
+        { command: 'help', description: 'Show what this bot can do' },
+      ]).catch((error: unknown) => {
+        ctx.logger.warn(`channel-telegram: setMyCommands failed — ${String(error)}`)
+      })
       await pollMessages({
         client,
         pollTimeoutSeconds,

@@ -70,11 +70,16 @@ const HELP_TEXT = [
   'Anything else is sent to the agent.',
 ].join('\n')
 
-/** Callback-data prefix marking a model-menu press; the rest is `provider/model`. */
+/** Callback-data prefixes for the two-level `/model` picker. */
 const MODEL_PICK_PREFIX = 'model:'
+const MODEL_PROVIDER_PREFIX = 'modelp:'
+const MODEL_PAGE_PREFIX = 'modelpage:'
 
-/** Rows-per-page in the `/model` button menu; one route per row, tap-friendly. */
-const MODEL_MENU_PAGE = 12
+/**
+ * Models per page in the provider submenu; one route per row plus Back/Next
+ * keeps the keyboard inside one phone screen.
+ */
+const MODEL_MENU_PAGE = 8
 
 /**
  * True when `/new` or `/reset` asks for a fresh conversation. Both exist for
@@ -136,6 +141,8 @@ export function assistantTextSince(events: readonly SessionEvent[], seq: number)
 /** One relay instance owns the chat-key → session mapping for its process. */
 export class TelegramRelay {
   private readonly chats = new Map<string, ChatState>()
+  /** Senders already told they're not allowlisted; one notice each, not a spam loop. */
+  private readonly deniedNotified = new Set<string>()
 
   constructor(
     private readonly options: RelayOptions,
@@ -146,8 +153,11 @@ export class TelegramRelay {
       /** Send with an inline keyboard (the `/model` picker). */
       sendKeyboard(chatId: InboundMessage['chatId'], text: string, keyboard: readonly { label: string; callbackData: string }[][]): Promise<{ messageId: number }>
       edit(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
-      /** Collapse a keyboard-bearing message's markup after a pick. */
-      clearKeyboard(chatId: InboundMessage['chatId'], messageId: number, text: string): Promise<void>
+      /**
+       * Rewrite a keyboard message's text and markup in place (picker paging,
+       * collapse-on-pick). An empty keyboard removes the buttons.
+       */
+      editMessage(chatId: InboundMessage['chatId'], messageId: number, text: string, keyboard: readonly { label: string; callbackData: string }[][]): Promise<void>
       /** Acknowledge a press so Telegram stops the client-side spinner. */
       answerCallback(callbackId: string, toast?: string): Promise<void>
       typing(chatId: InboundMessage['chatId']): Promise<void>
@@ -174,7 +184,16 @@ export class TelegramRelay {
    */
   async handle(message: InboundMessage): Promise<void> {
     if (!this.isAllowed(message)) {
+      // Deny-by-default stays, but silence strands a new owner mid-setup: the
+      // one reply names their id so allowlisting themselves is self-service.
       this.io.logger?.warn(`telegram: rejected message from non-allowed user ${message.senderId}`)
+      if (!this.deniedNotified.has(message.senderId)) {
+        this.deniedNotified.add(message.senderId)
+        await this.io.send(message.chatId, [
+          'You are not on this bot\'s allowlist yet.',
+          `Your Telegram id is ${message.senderId} — add it to the channel's allowedUserIds config and restart.`,
+        ].join('\n'))
+      }
       return
     }
     if (isResetCommand(message.text)) {
@@ -198,9 +217,10 @@ export class TelegramRelay {
   }
 
   /**
-   * Route one authorized inline-keyboard press: only `model:<provider>/<model>`
-   * payloads are meaningful today. The menu message collapses to plain text
-   * showing the pick, and the presser gets a toast.
+   * Route one authorized inline-keyboard press. The picker is two-level,
+   * hermes-style: `modelp:<provider>` opens that provider's model list (paged
+   * with ‹ Back / Next ▶), `modelpage:<provider>/<n>` flips pages, and
+   * `model:<provider>/<model>` commits the switch and collapses the menu.
    * @param query - The normalized callback query from the poller.
    */
   async handleCallback(query: TelegramCallbackQuery): Promise<void> {
@@ -209,29 +229,92 @@ export class TelegramRelay {
       await this.io.answerCallback(query.callbackId).catch(() => {})
       return
     }
-    if (!query.data.startsWith(MODEL_PICK_PREFIX)) {
-      await this.io.answerCallback(query.callbackId).catch(() => {})
-      return
-    }
-    const route = query.data.slice(MODEL_PICK_PREFIX.length)
-    const slash = route.indexOf('/')
-    if (slash <= 0 || slash === route.length - 1) {
-      await this.io.answerCallback(query.callbackId, 'Malformed model pick').catch(() => {})
-      return
-    }
     try {
-      const resolved = await this.services.resolveSelection(route.slice(0, slash), route.slice(slash + 1))
-      const state = this.chatStateOf(query.chatId, query.threadId)
-      state.selection = resolved
-      const live = state.agent
-      if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
-      // Collapse the menu into a receipt; the keyboard disappears.
-      await this.io.clearKeyboard(query.chatId, query.messageId, `Model set to ${resolved.provider}/${resolved.model}.`)
+      if (query.data === 'modelroot:') {
+        await this.showProviderRoot(query)
+        return
+      }
+      if (query.data.startsWith(MODEL_PROVIDER_PREFIX) || query.data.startsWith(MODEL_PAGE_PREFIX)) {
+        const provider = query.data.slice(
+          query.data.startsWith(MODEL_PROVIDER_PREFIX) ? MODEL_PROVIDER_PREFIX.length : MODEL_PAGE_PREFIX.length,
+        ).split('/')[0] ?? ''
+        const page = query.data.startsWith(MODEL_PAGE_PREFIX)
+          ? Number.parseInt(query.data.slice(MODEL_PAGE_PREFIX.length).split('/')[1] ?? '0', 10) || 0
+          : 0
+        await this.showModelPage(query, provider, page)
+        return
+      }
+      if (query.data.startsWith(MODEL_PICK_PREFIX)) {
+        const route = query.data.slice(MODEL_PICK_PREFIX.length)
+        const slash = route.indexOf('/')
+        if (slash <= 0 || slash === route.length - 1) {
+          await this.io.answerCallback(query.callbackId, 'Malformed model pick').catch(() => {})
+          return
+        }
+        const resolved = await this.services.resolveSelection(route.slice(0, slash), route.slice(slash + 1))
+        const state = this.chatStateOf(query.chatId, query.threadId)
+        state.selection = resolved
+        const live = state.agent
+        if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
+        // Collapse the menu into a receipt; the keyboard disappears.
+        await this.io.editMessage(query.chatId, query.messageId, `Model set to ${resolved.provider}/${resolved.model}.`, [])
+        await this.io.answerCallback(query.callbackId).catch(() => {})
+        return
+      }
       await this.io.answerCallback(query.callbackId).catch(() => {})
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       await this.io.answerCallback(query.callbackId, `Switch failed: ${reason}`).catch(() => {})
     }
+  }
+
+  /** Render the provider level of the picker into the keyboard message. */
+  private async showProviderRoot(query: TelegramCallbackQuery): Promise<void> {
+    const routes = await this.services.listModels()
+    const fallback = this.services.defaultSelection()
+    const state = this.chatStateOf(query.chatId, query.threadId)
+    const currentText = state.selection === undefined
+      ? `${fallback.provider}/${fallback.model}`
+      : `${state.selection.provider}/${state.selection.model}`
+    const currentProvider = currentText.split('/')[0] ?? ''
+    const providers = [...new Set(routes.map(route => route.provider))].sort()
+    const keyboard = providers.slice(0, 12).map((provider) => {
+      const count = routes.filter(route => route.provider === provider).length
+      const mark = provider === currentProvider ? '✓ ' : ''
+      return [{ label: `${mark}${provider} (${count})`, callbackData: `${MODEL_PROVIDER_PREFIX}${provider}` }]
+    })
+    await this.io.editMessage(query.chatId, query.messageId, `Current model: ${currentText}\n\nPick a provider:`, keyboard)
+    await this.io.answerCallback(query.callbackId).catch(() => {})
+  }
+
+  /** Render one page of one provider's models into the keyboard message. */
+  private async showModelPage(query: TelegramCallbackQuery, provider: string, page: number): Promise<void> {
+    const routes = (await this.services.listModels()).filter(route => route.provider === provider)
+    const pageCount = Math.max(1, Math.ceil(routes.length / MODEL_MENU_PAGE))
+    const safePage = Math.min(Math.max(page, 0), pageCount - 1)
+    const slice = routes.slice(safePage * MODEL_MENU_PAGE, (safePage + 1) * MODEL_MENU_PAGE)
+    const fallback = this.services.defaultSelection()
+    const state = this.chatStateOf(query.chatId, query.threadId)
+    const currentText = state.selection === undefined
+      ? `${fallback.provider}/${fallback.model}`
+      : `${state.selection.provider}/${state.selection.model}`
+    const keyboard = slice
+      .map((route) => {
+        const data = `${MODEL_PICK_PREFIX}${route.provider}/${route.model}`
+        // Telegram caps callback data at 64 bytes; oversized routes are typed.
+        if (data.length > 64) return undefined
+        const mark = `${route.provider}/${route.model}` === currentText ? '✓ ' : ''
+        return [{ label: `${mark}${route.model}`, callbackData: data }]
+      })
+      .filter(row => row !== undefined)
+    const nav: { label: string; callbackData: string }[] = []
+    if (safePage > 0) nav.push({ label: '‹ Back', callbackData: `${MODEL_PAGE_PREFIX}${provider}/${safePage - 1}` })
+    nav.push({ label: '↩ Providers', callbackData: 'modelroot:' })
+    if (safePage < pageCount - 1) nav.push({ label: 'Next ›', callbackData: `${MODEL_PAGE_PREFIX}${provider}/${safePage + 1}` })
+    keyboard.push(nav)
+    const header = `${provider} — page ${safePage + 1}/${pageCount} (${routes.length} models)\nCurrent: ${currentText}`
+    await this.io.editMessage(query.chatId, query.messageId, header, keyboard)
+    await this.io.answerCallback(query.callbackId).catch(() => {})
   }
 
   private chatStateOf(chatId: InboundMessage['chatId'], threadId: number | undefined): ChatState {
@@ -261,22 +344,20 @@ export class TelegramRelay {
       } catch {
         // Fall through: a listing failure still shows the current route.
       }
-      const header = `Current model: ${currentText}\n\nPick a model:`
-      // Hermes-style picker: one tappable button per route. Callback data is
-      // `model:<provider>/<model>`; Telegram caps it at 64 bytes, so oversized
-      // routes fall back to typing the name.
-      const keyboard: { label: string; callbackData: string }[][] = []
-      for (const route of routes.slice(0, MODEL_MENU_PAGE)) {
-        const data = `${MODEL_PICK_PREFIX}${route.provider}/${route.model}`
-        if (data.length > 64) continue
-        const mark = `${route.provider}/${route.model}` === currentText ? '✓ ' : ''
-        keyboard.push([{ label: `${mark}${route.model} · ${route.name}`, callbackData: data }])
-      }
+      // Hermes-style two-level picker: level one is providers only, so the
+      // keyboard stays small even with many models.
+      const currentProvider = currentText.split('/')[0] ?? ''
+      const providers = [...new Set(routes.map(route => route.provider))].sort()
+      const keyboard = providers.slice(0, 12).map((provider) => {
+        const count = routes.filter(route => route.provider === provider).length
+        const mark = provider === currentProvider ? '✓ ' : ''
+        return [{ label: `${mark}${provider} (${count})`, callbackData: `${MODEL_PROVIDER_PREFIX}${provider}` }]
+      })
       if (keyboard.length === 0) {
-        await this.io.send(message.chatId, header.length > 0 && routes.length === 0 ? `${header}\n(no models listed — type /model <provider/model>)` : header)
+        await this.io.send(message.chatId, `Current model: ${currentText}\n\nNo models listed — type /model <provider/model>.`)
         return
       }
-      await this.io.sendKeyboard(message.chatId, header, keyboard)
+      await this.io.sendKeyboard(message.chatId, `Current model: ${currentText}\n\nPick a provider:`, keyboard)
       return
     }
     // Hermes-style resolution: full "provider/model" switches directly; a bare

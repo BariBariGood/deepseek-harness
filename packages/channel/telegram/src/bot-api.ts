@@ -186,20 +186,28 @@ export class TelegramBotApiClient {
   }
 
   /**
-   * Replace a keyboard-bearing message's text and reply markup in one call;
-   * this is how the model menu collapses after a pick.
+   * Replace a keyboard-bearing message's text and markup in one call. An
+   * empty keyboard collapses the menu; a non-empty one swaps the page.
    * @param chatId - Destination chat (numeric or `@username`).
    * @param messageId - Platform message id carrying the keyboard.
    * @param text - The replacement body.
+   * @param keyboard - The replacement inline keyboard.
    * @returns Resolves when the edit is accepted.
    */
-  async editMessageMarkup(chatId: TelegramChatId, messageId: number, text: string): Promise<void> {
+  async editMessageWithMarkup(
+    chatId: TelegramChatId,
+    messageId: number,
+    text: string,
+    keyboard?: readonly TelegramInlineButton[][],
+  ): Promise<void> {
     await this.call('editMessageText', {
       chat_id: chatId,
       message_id: messageId,
       text,
       link_preview_options: { is_disabled: true },
-      reply_markup: { inline_keyboard: [] },
+      reply_markup: {
+        inline_keyboard: (keyboard ?? []).map(row => row.map(button => ({ text: button.label, callback_data: button.callbackData }))),
+      },
     }, undefined)
   }
 
@@ -217,6 +225,16 @@ export class TelegramBotApiClient {
       text,
       link_preview_options: { is_disabled: true },
     }, undefined)
+  }
+
+  /**
+   * Publish the bot's slash-command menu: Telegram renders these as
+   * autocomplete hints in every chat's input and in the menu button.
+   * @param commands - Name (no slash, 1-32 chars) plus user-facing description.
+   * @returns Resolves when the menu is stored.
+   */
+  async setMyCommands(commands: readonly { command: string; description: string }[]): Promise<void> {
+    await this.call('setMyCommands', { commands }, undefined)
   }
 
   /**

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/channel/telegram/README.md
-README.md: 03fb38505540b799626e18b094a68ef4b125d92e
-README.zh.md: 5f09300c8055cffde067910c0b975f287a3883f3
+README.md: 01079ef2d56826f2d49755c54686191acf10ff56
+README.zh.md: 2debfb6f36000793fa0423197cf37f4927ba0dab

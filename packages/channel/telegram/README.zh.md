@@ -13,8 +13,8 @@
    - 应用 **Models 页面**的凭据存储，引用名 `TELEGRAM_BOT_TOKEN`；或
    - 启动环境中的 `TELEGRAM_BOT_TOKEN=…`。
 3. 挂载插件（默认 surface 组合已包含）并启动应用；启动日志会打印 `polling as @<username> for N allowed user(s)`。
-4. 用自己的账号给 bot 发消息。白名单默认拒绝所有人，所以先把自己加进去：获取你的数字 id（发任意消息后从服务端日志的 rejected-update 行读取，或询问 @userinfobot），填入插件的 `allowedUserIds` 配置列表，然后重启一次。
-5. 会话内冒烟验证：`/help` 列出命令，`/model` 显示当前模型及部署暴露的全部 provider/model 路由，`/model <provider/model>` 切换本会话（`/model flash` 这类裸名模糊匹配；有歧义时列出候选），`/new` 开启全新对话。
+4. 用自己的账号给 bot 发消息。白名单默认拒绝所有人，但会一次性回复你的数字 id——把它加进插件的 `allowedUserIds` 配置列表并重启一次即可（也可以从服务端日志的 rejected-update 行读取，或询问 @userinfobot）。
+5. 会话内冒烟验证：`/help` 列出命令，`/model` 打开两级选择器（先选 provider，再选 model，超过一页时用 ‹ Back / Next › 翻页），点按即切换本会话（仍可输入 `/model <provider/model>` 或裸名模糊匹配），`/new` 开启全新对话。这些命令也会出现在 Telegram 的菜单按钮自动补全里。
 
 ## Model Experience
 
