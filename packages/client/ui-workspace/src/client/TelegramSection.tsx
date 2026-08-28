@@ -7,7 +7,7 @@ import { IconTriangleRightFill14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SessionNodeItem, type RowTranslate } from './rows/Rows.tsx'
 import rowsCss from './rows/Rows.module.css'
 import type { SessionNode } from './tree.ts'
-import css from './WorkspaceBrowser.module.css'
+import css from './rows/WorkspaceBrowser.module.css'
 
 /** Rows visible before the show-more affordance; mirrors workspace groups. */
 const COLLAPSED_SESSION_LIMIT = 5
