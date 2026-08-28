@@ -21,9 +21,6 @@
       "path": "../locale"
     },
     {
-      "path": "../runtime"
-    },
-    {
       "path": "../ui-primitives"
     },
     {
