@@ -12,6 +12,10 @@ Some OpenAI-compatible gateways report a dropped upstream connection as a well-f
 
 `classifyPiAiError` gains one alternative in its existing TRANSPORT branch, matching `finish_reason: network_error` prose. The failure therefore reaches the default retry policy under `TRANSPORT` — a code every shipped policy already treats as retryable — and provider policies can tune it like any transport failure. The classifier stays textual on purpose: pi-ai still flattens terminal errors to prose (see the existing XXX note above the function), so a structured upstream code is not available at this seam. The wording is pinned by a test case alongside the other transport phrasings.
 
+## Consequences
+
+`network_error` joins the pinned transport vocabulary, so vendored pi-ai updates that rephrase the prose will need this matcher revisited — the existing XXX note above the classifier is where that duty lives. Turns now survive transient gateway drops at the cost of retrying genuinely dead endpoints up to the policy budget, which every shipped policy already prices for `TRANSPORT`.
+
 ## Alternatives considered
 
 **Retry `PI_AI_ERROR` broadly.** Repeating an unknown model-level failure can loop on genuinely non-retryable conditions; the classifier, not the budget, is where this failure belongs.

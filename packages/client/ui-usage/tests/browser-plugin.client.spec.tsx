@@ -9,7 +9,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup } from '@testing-library/react'
-import { SlotRegistry } from '@deepseek-ai/dsh-client-runtime/client'
+import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import type { UsageSnapshot } from '@deepseek-ai/dsh-api-remotes/client'
