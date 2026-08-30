@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-host-usage",
   "description": "Connected-provider usage projection (OpenRouter credits, OpenCode Go limits) served as the usage Remote",
-  "version": "0.1.1-rc.2",
+  "version": "0.1.2-alpha.1",
   "publishConfig": {
     "access": "public"
   },
