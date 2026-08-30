@@ -108,7 +108,7 @@ describe('TelegramRelay', () => {
           }
           return [
             { provider: 'opencode-go', model: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-            { provider: 'zen-go', model: 'ox-alpha-free', name: 'Ox Alpha' },
+            { provider: 'zen-go', model: 'claude-4', name: 'Claude 4' },
           ]
         },
         resolveSelection: async (provider, model) => {
@@ -219,15 +219,15 @@ describe('TelegramRelay', () => {
     })
     expect(bench0.answered).toContain('cb0')
     const menu = bench0.keyboards.at(-1)
-    expect(menu?.keyboard.map(row => row[0]?.callbackData)).toContain('model:zen-go/ox-alpha-free')
+    expect(menu?.keyboard.map(row => row[0]?.callbackData)).toContain('model:zen-go/claude-4')
     expect(menu?.keyboard.at(-1)?.some(button => button.label === '↩ Providers')).toBe(true)
     // Level two → commit the pick; keyboard collapses to empty.
     await bench0.relay.handleCallback({
       callbackId: 'cb1', fromId: '555', chatId: 100, threadId: undefined,
-      messageId: 7, data: 'model:zen-go/ox-alpha-free',
+      messageId: 7, data: 'model:zen-go/claude-4',
     })
     expect(bench0.answered).toContain('cb1')
-    expect(bench0.edits.at(-1)?.text).toBe('Model set to zen-go/ox-alpha-free.')
+    expect(bench0.edits.at(-1)?.text).toBe('Model set to zen-go/claude-4.')
     expect(bench0.keyboards.at(-1)?.keyboard ?? []).toEqual([])
     // The switch persists for the chat's next turn.
     await bench0.relay.handle(message('/model flash'))
@@ -262,7 +262,7 @@ describe('TelegramRelay', () => {
     const bench0 = bench()
     await bench0.relay.handleCallback({
       callbackId: 'cb4', fromId: '999', chatId: 100, threadId: undefined,
-      messageId: 7, data: 'model:zen-go/ox-alpha-free',
+      messageId: 7, data: 'model:zen-go/claude-4',
     })
     expect(bench0.answered).toContain('cb4')
     expect(bench0.edits).toHaveLength(0)
@@ -280,10 +280,10 @@ describe('TelegramRelay', () => {
 
   it('switches by full provider/model and by a unique bare name', async () => {
     const bench0 = bench()
-    await bench0.relay.handle(message('/model zen-go/ox-alpha-free'))
-    expect(bench0.sent.at(-1)?.text).toBe('Model set to zen-go/ox-alpha-free.')
+    await bench0.relay.handle(message('/model zen-go/claude-4'))
+    expect(bench0.sent.at(-1)?.text).toBe('Model set to zen-go/claude-4.')
     await bench0.relay.handle(message('/model'))
-    expect(bench0.sent.at(-1)?.text).toContain('Current model: zen-go/ox-alpha-free')
+    expect(bench0.sent.at(-1)?.text).toContain('Current model: zen-go/claude-4')
     await bench0.relay.handle(message('/model flash'))
     expect(bench0.sent.at(-1)?.text).toBe('Model set to opencode-go/deepseek-v4-flash.')
   })
@@ -301,7 +301,7 @@ describe('TelegramRelay', () => {
     await bench0.relay.handle(message('/model e'))
     const text = bench0.sent.at(-1)?.text ?? ''
     expect(text).toContain('ambiguous')
-    expect(text).toContain('zen-go/ox-alpha-free')
+    expect(text).toContain('zen-go/claude-4')
   })
 
   it('serializes concurrent messages per chat instead of interleaving turns', async () => {
