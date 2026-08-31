@@ -95,6 +95,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+            if [ "$GITHUB_REPOSITORY" != "deepseek-ai/deepseek-harness" ]; then
+              echo "::warning::DEEPSEEK_API_KEY empty on $GITHUB_REPOSITORY - skipping E2E (no key on fork)"
+              exit 0
+            fi
             echo "::error::DEEPSEEK_API_KEY is empty. The e2e suite would self-skip and"
             echo "::error::report a false green. Configure the repo secret DEEPSEEK_API_KEY_EXTERNAL."
             exit 1
