@@ -67,6 +67,9 @@ jobs:
       - name: Install (immutable)
         run: pnpm install --frozen-lockfile
 
+      - name: Build (host lib for typert)
+        run: pnpm run build:lib:host
+
       # The bwrap rung needs bubblewrap on PATH and unprivileged user
       # namespaces. Ubuntu 24.04 gates the latter behind an AppArmor knob;
       # lift it best-effort — on images where the knob is absent the
