@@ -6,6 +6,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import LlmRuntime, { createUserMessage, EMPTY_RESPONSE_CODE, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionEvent, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { LlmPersistEventData } from '@deepseek-ai/dsh-llm-persist/types'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -74,6 +75,7 @@ async function harness(
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
