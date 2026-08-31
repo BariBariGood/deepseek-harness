@@ -1,20 +1,22 @@
+---
+description: "Client usage panel that renders the host usage Remote in the web sidebar."
+kind: "package-reference"
+---
+
 # @deepseek-ai/dsh-client-ui-usage
 
 English | [中文](README.zh.md)
 
-Sidebar usage surface over the [`usage`](../../host/usage/README.md) Remote. The plugin contributes one `sidebar.footer.action` entry: an icon trigger that opens a floating provider-usage card anchored above the footer (the sidebar clips overflow, so the card positions itself from a measured trigger offset instead of document flow). Opening always refetches; the header button refreshes on demand.
+## Summary
 
-The component is pure presentation: the inject face exposes one `refresh` verb that unwraps the Remote envelope, and all view state (open flag, last snapshot, in-flight marker, error) stays component-local. Each report renders by its `code`: OpenRouter credit totals as a USD bar with remaining allowance, OpenCode Go windows as percent bars with reset instants, `unconfigured` as a hint naming the missing credential ref, and errors as an inline alert beside any healthy provider. Copy lives in the zh-first `usage` locale namespace.
+Client usage panel that renders the host usage Remote in the web sidebar footer and floating panel, polling per open and refresh.
 
-## Model Experience
+## Table of Contents
 
-None, as this sidebar card renders provider billing state that never enters the Session log, the model context, or telemetry.
+- Summary
+- Table of Contents
+- Dev Note
 
-#### KV Cache effect
+### Dev Note
 
-None; this package never assembles model input.
-
-## Known Limitations and Deferred Work
-
-- **Pull-only** — numbers refresh on open or explicit action; there is no background polling or push update.
-- **Fixed USD formatting** — OpenRouter bills in USD, so amounts render through an en-US currency formatter regardless of UI language.
+Implementation details and maintenance notes.
