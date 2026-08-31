@@ -10,10 +10,6 @@ import type { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { SessionId, type SessionHeader, type SessionOrigin } from '@deepseek-ai/dsh-session'
-import {
-  type SessionHeader,
-  type SessionId,
-} from '@deepseek-ai/dsh-session'
 import { sql } from './sql.ts'
 
 /** Current physical-record schema with packed and compressed event rows. */

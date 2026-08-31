@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import { SettingsProvider, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import LlmRuntime, { createUserMessage, EMPTY_RESPONSE_CODE, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -392,7 +392,7 @@ describe('provider-pinned retry persistence', () => {
     }, { random: () => 0.5 })
     context = built.ctx
     await built.ctx.plugin(MemorySettings)
-    await built.ctx.settings.update(settingsNamespace('llm-persist'), {
+    await built.ctx.settings.update('llm-persist' as SettingsNamespace, {
       providers: ['mock'],
       codes: ['SERVER'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
