@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context, Events } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { EMPTY_RESPONSE_CODE } from '@deepseek-ai/dsh-llm'
@@ -27,8 +27,6 @@ export { PersistId } from './brand.ts'
 
 export const name = 'llm-persist'
 export const inject = ['agents']
-
-const NS = settingsNamespace('llm-persist')
 
 const DEFAULT_CODES = Object.freeze([EMPTY_RESPONSE_CODE])
 const DEFAULT_INITIAL_DELAY_MS = 2_000
@@ -236,10 +234,12 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     await Promise.allSettled([...active])
   }, 'llm-persist: abort and drain active recovery')
 
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: () => {},
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, 'llm-persist', Config, config, {
+      setSource: (source: () => Config) => {
+        current = source
+      },
+      onChange: () => {},
+    })
   })
 }

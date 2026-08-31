@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-channel-telegram",
   "description": "Telegram channel: relays allowlisted chats into durable agent sessions and returns final replies",
-  "version": "0.1.2-alpha.1",
+  "version": "0.1.2-alpha.2",
   "publishConfig": {
     "access": "public"
   },
