@@ -48,7 +48,8 @@
   max-width: calc(100vw - 24px);
   max-height: 60vh;
   overflow: hidden;
-  border: 1px solid var(--dsw-alias-border-inverted);
+  /* Elevated like the Menu/HoverCard primitives: the shadow draws the
+     outline, so no neutral border sits beside it. */
   border-radius: 12px;
   background: var(--dsw-specific-menu);
   box-shadow: var(--dsw-shadow-lv3);

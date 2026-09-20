@@ -18,7 +18,8 @@ export interface RelayAgent {
   readonly session: {
     /** Log length; snapshot before submitting so the reply fold starts here. */
     readonly seq: number
-    readonly events: readonly SessionEvent[]
+    /** Frozen snapshot of the log; polled during the turn and folded after it. */
+    snapshotEvents(): readonly SessionEvent[]
   }
   /** Live model-selection ref installed at setup; absent on legacy agents. */
   readonly selectionRef?: { current: { provider: string; model: string } | undefined } | undefined
@@ -440,7 +441,7 @@ export class TelegramRelay {
     typingTick()
     const typing = setInterval(typingTick, 4_000)
     const streamTimer = setInterval(() => {
-      const { text } = assistantTextSince(agent.session.events, firstSeq)
+      const { text } = assistantTextSince(agent.session.snapshotEvents(), firstSeq)
       if (text.length > 0) void sendDraft(text)
     }, this.options.streamIntervalMs ?? STREAM_EDIT_INTERVAL_MS)
     try {
@@ -450,7 +451,7 @@ export class TelegramRelay {
       clearInterval(streamTimer)
     }
 
-    const outcome = assistantTextSince(agent.session.events, firstSeq)
+    const outcome = assistantTextSince(agent.session.snapshotEvents(), firstSeq)
     await this.services.flushSession(agent.session)
     const suffix = outcome.reason !== undefined && outcome.reason.kind !== 'completed'
       ? `\n\n_(turn ended: ${outcome.reason.kind})_`

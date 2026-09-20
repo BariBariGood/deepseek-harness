@@ -9,6 +9,8 @@ import { Service, type Context } from '@deepseek-ai/cordis'
 import type { TypertContextMap } from './types.ts'
 
 export { RemoteError, remoteErrorOf } from './remote-error.ts'
+export { TYPERT_OWNED_VALUE, isTypertOwnedValue, typertOwnedValue } from './owned-value.ts'
+export type { TypertOwnedValue } from './owned-value.ts'
 
 const TYPERT_REMOTE_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 
@@ -34,7 +36,6 @@ export type {
   TypertClientContextAdapter,
   TypertCodec,
   TypertContext,
-  TypertContextAdapter,
   TypertContextMap,
   TypertContextRegistry,
   TypertContextWire,
@@ -42,7 +43,6 @@ export type {
   TypertForwardableEvent,
   TypertForwardableEventEntry,
   TypertHostContextAdapter,
-  TypertHostContextIdentity,
   TypertHostContextResolver,
   TypertLocalRegistry,
   TypertLookup,

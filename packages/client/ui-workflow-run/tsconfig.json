@@ -33,6 +33,9 @@
       "path": "../ui-session"
     },
     {
+      "path": "../ui-workspace"
+    },
+    {
       "path": "../ui-primitives"
     },
     {
@@ -46,9 +49,6 @@
     },
     {
       "path": "../../workflow/tool-workflow"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     }
   ]
 }

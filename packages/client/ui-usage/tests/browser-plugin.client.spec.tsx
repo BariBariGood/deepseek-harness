@@ -76,7 +76,7 @@ describe('ui-usage browser half on a real Context', () => {
       }),
     })
 
-    await expect(face()?.refresh()).rejects.toThrowError('usage.get failed: service-unavailable: usage service is not mounted')
+    await expect(face()?.refresh()).rejects.toThrow('usage.get failed: service-unavailable: usage service is not mounted')
   })
 
   it('removes the contribution when the plugin fiber is disposed', async () => {
@@ -88,7 +88,7 @@ describe('ui-usage browser half on a real Context', () => {
   })
 
   it('runs the empty node half and registers the invariant companion', async () => {
-    expect(nodeApply()).toBeUndefined()
+    nodeApply()
     const ctx = new Context()
     await ctx.plugin(InvariantRegistry, { enabled: true })
     await expect(ctx.plugin(UsageInvariant).await()).resolves.toBeDefined()

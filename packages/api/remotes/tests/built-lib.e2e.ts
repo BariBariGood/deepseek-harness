@@ -48,6 +48,7 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
     const script = `
       import { createServer } from 'node:http'
       import * as cordis from '@deepseek-ai/cordis'
+      import * as zod from 'zod'
 
       const urls = ${JSON.stringify(urls)}
       const { Context } = cordis
@@ -157,6 +158,7 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
         if (handoff === undefined) throw new Error('missing Client bundle handoff ' + id)
         return handoff.factory(specifier => {
           if (specifier === '@deepseek-ai/cordis') return cordis
+          if (specifier === 'zod') return zod
           throw new Error('unexpected Client external ' + specifier)
         })
       }
@@ -174,12 +176,7 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
         identity: candidate => candidate.builtAgentId,
       })
 
-      let invalidRejected = false
-      try {
-        await client.remote.goals.create(rootAgent.id, { objective: 1 })
-      } catch {
-        invalidRejected = true
-      }
+      const invalidResult = await client.remote.goals.create(rootAgent.id, { objective: 1 })
       // Every generated method resolves to the RemoteResult envelope; the
       // business values below are what the assertions pin.
       const rootResult = await client.remote.goals.create(rootAgent.id, { objective: 'root goal' })
@@ -191,14 +188,14 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
       const agentContext = client.extend({ builtAgentId: scopedAgent.id })
       const scopedResult = await agentContext.remote.goals.create({ objective: 'scoped goal', maxGoalRounds: 3 })
       const result = {
-        invalidRejected,
+        invalidResult,
         rootResult: rootResult.value,
         rootEdit: rootEdit.value,
         scopedResult: scopedResult.value,
         rootGoal: host.goals.get(rootAgent)?.objective,
         scopedGoal: host.goals.get(scopedAgent)?.objective,
-        rootEvents: rootAgent.session.events.length,
-        scopedEvents: scopedAgent.session.events.length,
+        rootEvents: rootAgent.session.snapshotEvents().length,
+        scopedEvents: scopedAgent.session.snapshotEvents().length,
       }
 
       await client.fiber.dispose()
@@ -213,7 +210,7 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
     const result = await runPlainNode(script)
     expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0)
     const output = JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}') as {
-      invalidRejected: boolean
+      invalidResult: { ok: boolean; error?: { code: string } }
       rootResult: { ref: { id: string; revision: number } }
       rootEdit: { objective: string; revision: number }
       scopedResult: { ref: { id: string; revision: number } }
@@ -223,7 +220,7 @@ describe.skipIf(!requiredArtifacts)('Goal Remote built LIB chain', () => {
       scopedEvents: number
     }
     expect(output).toMatchObject({
-      invalidRejected: true,
+      invalidResult: { ok: false, error: { code: 'gateway/input-invalid' } },
       rootResult: { ref: { revision: 1 } },
       rootEdit: { objective: 'edited root goal', revision: 2 },
       scopedResult: { ref: { revision: 1 } },

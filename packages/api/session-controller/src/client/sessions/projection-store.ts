@@ -9,6 +9,7 @@
  * bare observable faces feed `useProjection` (ui-renderer binds them).
  */
 import type { SessionProjectionMap } from '@deepseek-ai/dsh-session-projection/types'
+import type { SessionSeqCursor } from '@deepseek-ai/dsh-session/types'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { Notifier } from './notifier.ts'
 
@@ -46,7 +47,7 @@ export type UseProjection = {
  */
 export interface ProjectionsBaseline {
   /** The consistent-cut seq (equals the window tail seq by construction). */
-  asOfSeq: number
+  asOfSeq: SessionSeqCursor
   /** Whole current values by key; a registered key absent here means the capability is absent. */
   values: Readonly<Record<string, unknown>>
 }
@@ -54,7 +55,7 @@ export interface ProjectionsBaseline {
 /** One key's row: the latest finished value and the seq it is consistent with. */
 interface Row {
   value: unknown
-  seq: number
+  seq: SessionSeqCursor
 }
 
 /** Per-key notification channel: the bare face plus its batching notifier. */
@@ -66,9 +67,9 @@ interface Channel {
 /**
  * One session's projection values. Framework semantics, uniform across every
  * key: a baseline seeds rows at its cut, a push frame updates one row, and in
- * both paths a lower-or-equal seq loses — a replayed frame cannot regress a
- * value, a stale baseline cannot overwrite a newer frame. A key the store has
- * never seen reads `undefined` (capability absent). Faces are identity-stable
+ * both paths a lower-or-equal seq within the Host generation loses. A replayed
+ * frame cannot regress a value; a stale baseline cannot overwrite a newer
+ * frame. A key the store has never seen reads `undefined` (capability absent). Faces are identity-stable
  * per key (create-on-demand, cached) so the React side binds each exactly
  * once; the store-level channel (`subscribeAny`) serves coarse consumers (the
  * manager's list projection reads the `title` key).
@@ -130,7 +131,7 @@ export class ProjectionValueStore {
    * @param value - whole value computed by the host unit.
    * @param seq - the unit's watermark at emission.
    */
-  apply(key: string, value: unknown, seq: number): void {
+  apply(key: string, value: unknown, seq: SessionSeqCursor): void {
     const row = this.rows.get(key)
     if (row !== undefined && seq <= row.seq) return // higher seq wins; replays and stale frames drop
     this.rows.set(key, { value, seq })
@@ -158,16 +159,9 @@ export class ProjectionValueStore {
     }
   }
 
-  /**
-   * Drop rows beyond a replacement control baseline. Such rows describe
-   * process state the Host lost before persisting it and would otherwise
-   * outrank recomputed lower-seq values forever. The caller seeds the new
-   * baseline immediately afterward.
-   * @param lastSeq - highest durable sequence reflected by the baseline.
-   */
-  truncate(lastSeq: number): void {
-    for (const [key, row] of this.rows) {
-      if (row.seq <= lastSeq) continue
+  /** Discard one Host generation's values and watermarks while preserving subscribed faces. */
+  clear(): void {
+    for (const key of this.rows.keys()) {
       this.rows.delete(key)
       this.changed(key)
     }

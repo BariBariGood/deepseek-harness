@@ -53,7 +53,6 @@ interface MountToken {
 interface ScopedProjection {
   readonly context: string
   readonly wire: string
-  readonly codec: TypertCodec
   readonly parameterIndex?: number
 }
 
@@ -284,7 +283,7 @@ class ClientRemoteService extends Service implements ClientRemote {
       }
     }
     for (const descriptor of contribution.descriptors) {
-      requireStrictDescriptor(descriptor)
+      requireStrictInputs(descriptor)
       if (descriptor.invocation.kind === 'direct') add(direct, descriptor, 'direct')
       if (scopedProjection(descriptor) !== undefined) add(scoped, descriptor, 'scoped')
     }
@@ -505,12 +504,12 @@ class ClientRemoteService extends Service implements ClientRemote {
       if (identity === undefined) {
         throw new Error(`client api: ${endpoint} requires a ${JSON.stringify(projection.context)} Context`)
       }
-      args[projection.wire] = parseInput(projection.codec, identity, endpoint, projection.wire)
+      args[projection.wire] = identity
     }
     let valueIndex = 0
     descriptor.parameters.forEach((parameter, parameterIndex) => {
       if (parameterIndex === projection?.parameterIndex) return
-      const value = parseInput(parameter.codec, values[valueIndex], endpoint, parameter.wire)
+      const value = values[valueIndex]
       if (value !== undefined) args[parameter.wire] = value
       valueIndex += 1
     })
@@ -673,7 +672,6 @@ function scopedProjection(descriptor: InvocationDescriptor): ScopedProjection | 
     return {
       context: descriptor.invocation.context,
       wire: descriptor.invocation.wire,
-      codec: descriptor.invocation.codec,
     }
   }
   if (descriptor.scope === undefined) return undefined
@@ -691,12 +689,11 @@ function scopedProjection(descriptor: InvocationDescriptor): ScopedProjection | 
   return {
     context: descriptor.scope.context,
     wire: descriptor.scope.wire,
-    codec: selected.parameter.codec,
     parameterIndex: selected.index,
   }
 }
 
-function requireStrictDescriptor(descriptor: InvocationDescriptor): void {
+function requireStrictInputs(descriptor: InvocationDescriptor): void {
   const endpoint = endpointOf(descriptor)
   for (const parameter of descriptor.parameters) {
     requireStrictCodec(parameter.codec, endpoint, parameter.wire)
@@ -712,27 +709,29 @@ function requireStrictCodec(codec: TypertCodec, endpoint: string, field: string)
   }
 }
 
-function parseInput(codec: TypertCodec, value: unknown, endpoint: string, field: string): unknown {
-  if (codec.mode !== 'strict') {
-    throw new Error(`client api: generated Remote ${endpoint} field ${JSON.stringify(field)} has no strict codec`)
-  }
-  try {
-    return codec.schema.parse(value)
-  } catch (cause) {
-    throw new Error(`client api: ${endpoint} rejected ${JSON.stringify(field)}`, { cause })
-  }
-}
-
 /** The namespace retired before or during the call, so no request outcome exists. */
 function withdrawn(endpoint: string): Extract<RemoteResult<never>, { readonly ok: false }> {
   return internalFailure(`client api: Remote method ${endpoint} is no longer mounted`)
 }
 
-function carrierFailure(endpoint: string, error: unknown): Extract<RemoteResult<never>, { readonly ok: false }> {
+/**
+ * The error branch a carrier throw (offline, transport fault) folds into: `gateway/internal` naming the endpoint and
+ * the thrown message. Exported so a stand-in for this face folds identically.
+ * @param endpoint - `<namespace>/<method>` that was called.
+ * @param error - what the carrier threw.
+ * @returns the failed result.
+ */
+export function carrierFailure(endpoint: string, error: unknown): Extract<RemoteResult<never>, { readonly ok: false }> {
   return internalFailure(`client api: ${endpoint} failed: ${error instanceof Error ? error.message : String(error)}`)
 }
 
-function cancelledFailure(endpoint: string, cause: unknown): Extract<RemoteResult<never>, { readonly ok: false }> {
+/**
+ * The error branch a call aborted by its caller folds into: `gateway/cancelled` with the carrier's throw as `cause`.
+ * @param endpoint - `<namespace>/<method>` that was called.
+ * @param cause - what the carrier threw when the signal aborted.
+ * @returns the failed result.
+ */
+export function cancelledFailure(endpoint: string, cause: unknown): Extract<RemoteResult<never>, { readonly ok: false }> {
   return {
     ok: false,
     error: new RemoteError('gateway/cancelled', `client api: Remote invocation "${endpoint}" was aborted`, {}, { cause }),

@@ -1,11 +1,11 @@
-/** Live Session queue, jobs, and projection state with reconnect baselines. */
+/** Live Session jobs and projection state with reconnect baselines. */
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { Deque } from '@deepseek-ai/dsh-deque'
 import type { JobSnapshot } from '@deepseek-ai/dsh-jobs'
 import type {
-  Session, SessionEvent, SessionEventMap, SessionId, UserMessage,
+  Session, SessionId,
 } from '@deepseek-ai/dsh-session'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type {
@@ -14,7 +14,6 @@ import type {
   SessionJob,
   SessionProjectionBaseline,
   SessionProjectionValues,
-  SessionQueuedItem,
 } from './types.ts'
 
 /** Owns the Host-wide Session control stream. */
@@ -23,7 +22,6 @@ export class SessionControlController {
 
   /** @param ctx - Host context carrying live Agent, projection, and jobs services. */
   constructor(private readonly ctx: Context) {
-    ctx.on('session/event', (session, event) => { this.onSessionEvent(session, event) })
     ctx.sessionProjections.onChanged((session, key, value, seq) => {
       this.broadcast({
         type: 'projection',
@@ -66,15 +64,12 @@ export class SessionControlController {
 
   private baseline(): SessionControlBaseline {
     const sessions = this.ctx.sessions.list()
-    const queues = Object.create(null) as Record<SessionId, readonly SessionQueuedItem[]>
     const jobs = Object.create(null) as Record<SessionId, readonly SessionJob[]>
     for (const session of sessions) {
       const agent = this.ctx.agents.get(session.id)
-      queues[session.id] = agent?.session === session ? queueItems(agent) : []
       jobs[session.id] = this.jobsFor(agent)
     }
     return {
-      queues,
       jobs,
       projections: this.projectionBaseline(sessions),
     }
@@ -93,17 +88,6 @@ export class SessionControlController {
       }
     }
     return blocks
-  }
-
-  private onSessionEvent(session: Session, event: SessionEvent): void {
-    if (event.type !== 'agent/inbox/spliced') return
-    const agent = this.ctx.agents.get(session.id)
-    if (agent?.session !== session) return
-    this.broadcast({
-      type: 'queue',
-      sessionId: session.id,
-      items: queueItems(agent, event.data),
-    })
   }
 
   private onJobsChanged(owner: Agent | undefined): void {
@@ -169,38 +153,6 @@ class ControlQueue {
       this.end()
     }
   }
-}
-
-function queueItems(
-  agent: Agent,
-  splice?: SessionEventMap['agent/inbox/spliced'],
-): SessionQueuedItem[] {
-  const project = (target: 'next-turn' | 'next-step'): readonly UserMessage[] => {
-    const messages = target === 'next-turn' ? agent.inbox.nextTurn : agent.inbox.nextStep
-    return splice?.target === target
-      ? messages.toSpliced(splice.start, splice.removedCount ?? 0, ...splice.inserted)
-      : messages
-  }
-  return [
-    ...project('next-turn').map(message => ({
-      id: message.id,
-      placement: 'queued' as const,
-      ...promptRpcId(message),
-      message: { id: message.id, content: message.content as unknown as JsonValue[] },
-    })),
-    ...project('next-step').map(message => ({
-      id: message.id,
-      placement: message.source.kind === 'user' ? 'steering' as const : 'context' as const,
-      ...promptRpcId(message),
-      message: { id: message.id, content: message.content as unknown as JsonValue[] },
-    })),
-  ]
-}
-
-/** Prompt-RPC identity carried by a browser-submitted message's user source. */
-function promptRpcId(message: UserMessage): Pick<SessionQueuedItem, 'rpcId'> {
-  const source = message.source
-  return source.kind === 'user' && 'rpcId' in source ? { rpcId: source.rpcId } : {}
 }
 
 function jobView(job: JobSnapshot): SessionJob {

@@ -42,7 +42,7 @@ function scriptedAgent(options: ScriptedAgentOptions = {}) {
       get seq() {
         return seq
       },
-      events,
+      snapshotEvents: () => events,
       flush: async () => true,
     },
     followup(input: { content: readonly { type: string; text?: string }[] }) {
@@ -319,7 +319,7 @@ describe('TelegramRelay', () => {
           agent: {
             session: {
               seq: 0,
-              events: [],
+              snapshotEvents: () => [],
             },
             followup() {},
             whenIdle: async () => {
@@ -379,11 +379,12 @@ describe('TelegramRelay draft streaming', () => {
   it('edits one draft message with folded text and finalizes it', async () => {
     const sent: { chatId: TelegramChatId; text: string }[] = []
     const edits: { chatId: TelegramChatId; messageId: number; text: string }[] = []
+    const events: SessionEvent[] = []
 
     const agent = {
       session: {
         seq: 0,
-        events: [] as SessionEvent[],
+        snapshotEvents: () => events,
         flush: async () => true,
       },
       followup() {},
@@ -391,7 +392,7 @@ describe('TelegramRelay draft streaming', () => {
         // A real turn lands assistant messages across time: step one early,
         // step two only at completion.
         const append = (text: string): void => {
-          agent.session.events.push({
+          events.push({
             type: 'assistant/message',
             seq: agent.session.seq + 1,
             time: 1,

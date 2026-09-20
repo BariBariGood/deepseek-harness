@@ -44,21 +44,11 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     return page.getByRole('dialog', { name: '设置' })
   }
 
-  /** Tokenize the lane-owned preset root after general aria normalization. */
-  function withPresetRoot(snapshot: string): string {
-    const rootSuffix = `/${userRoot.split('/').pop()!}`
-    return snapshot.split('\n').map((line) => {
-      const rootStart = line.indexOf(rootSuffix)
-      if (rootStart === -1) return line
-      const pathStart = line.lastIndexOf(' ', rootStart) + 1
-      return `${line.slice(0, pathStart)}{{presetRoot}}${line.slice(rootStart + rootSuffix.length)}`
-    }).join('\n')
-  }
-
   beforeAll(async () => {
     userRoot = await realpath(await mkdtemp(join(tmpdir(), 'dsh-web-e2e-presets-')))
     scaffold = await launchWebScaffold({
       extraOverlayPath: OVERLAY,
+      profile: { packages: [] },
       agentPresets: {
         // The shipped root is the plugin's own, prepended before this.
         roots: [{ path: userRoot, trust: 'user' }],
@@ -76,6 +66,7 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
   afterAll(async () => {
     await browser?.close()
     await scaffold?.close()
+    await rm(userRoot, { recursive: true, force: true })
   })
 
   it('offers the roster with copy as the only way to create', async () => {
@@ -85,11 +76,15 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     await dialog.waitFor({ timeout: 10_000 })
     await dialog.getByRole('button', { name: 'Agent 预设' }).click()
     await dialog.getByRole('heading', { name: 'Agent 预设' }).waitFor({ timeout: 10_000 })
-    await dialog.getByText('标准模式').first().waitFor({ timeout: 10_000 })
+    // The intro copy also names 标准模式. Wait for the roster's own action so
+    // the snapshot cannot land between the section shell and its cards.
+    await dialog.getByRole('button', { name: '查看: 标准模式', exact: true }).waitFor({ timeout: 10_000 })
 
     const snapshot = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
 
     await compareOrRefreshGolden(SECTION_EXPECTED, snapshot, MODE)
+    const toggle = dialog.getByRole('switch', { name: '允许切换agent模式' })
+    expect(await toggle.getAttribute('aria-checked')).toBe('true')
     // The intro states the copy path directly, and the shipped rows offer
     // view/copy but never delete or a location — their
     // install is overwritten by upgrades and is not the user's to manage.
@@ -98,6 +93,8 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     expect(snapshot).toContain('查看: 标准模式')
     expect(snapshot).not.toContain('删除: 标准模式')
     expect(snapshot).not.toContain('打开目录')
+    // The rest of this scenario exercises the existing default and Creator
+    // actions with the beta picker enabled by default.
   }, 60_000)
 
   it('views a shipped composition read-only instead of editing it', async () => {
@@ -146,8 +143,9 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     // The copy dialog is detached, so the settings dialog is the only one
     // left (it names itself via aria-labelledby, which a CSS attribute
     // selector cannot address).
-    const snapshot = withPresetRoot(
-      await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd))
+    const snapshot = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd, {
+      replacements: [[userRoot, '{{presetRoot}}']],
+    })
     await compareOrRefreshGolden(CREATED_EXPECTED, snapshot, MODE)
     expect(snapshot).toContain('{{presetRoot}}/my-agent')
 
@@ -159,7 +157,7 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     expect(composition).toBe(await readFile(join(SHIPPED_PRESETS, 'minimal', 'agent.cordis.yml'), 'utf8'))
     const metadata = await readFile(join(userRoot, 'my-agent', 'preset.yml'), 'utf8')
     expect(metadata).toContain('name: 我的模式')
-    expect(metadata).toContain('description: 仅提供持久 bash 与 str_replace_editor 的双工具编码 Agent。')
+    expect(metadata).toContain('description: 仅提供持久 shell 的单工具编码 Agent。')
     expect(metadata).not.toContain('order:')
   }, 60_000)
 
@@ -196,8 +194,9 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     await dialog.getByRole('button', { name: 'Agent 预设' }).click()
     await dialog.getByText('加载失败').first().waitFor({ timeout: 10_000 })
 
-    const snapshot = withPresetRoot(
-      await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd))
+    const snapshot = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd, {
+      replacements: [[userRoot, '{{presetRoot}}']],
+    })
     await compareOrRefreshGolden(DAMAGED_EXPECTED, snapshot, MODE)
     // Both damage shapes surface as marked, unselectable, uncopyable cards
     // that still carry their metadata and the discovery-reported reason.
@@ -255,7 +254,6 @@ describe('web e2e: agent-preset authoring is a host-side copy', () => {
     // new-session screen with the self-referential preset staged, and the
     // blank session the flow produces composes from it on the host.
     await dialog.waitFor({ state: 'detached', timeout: 10_000 })
-    await page.getByRole('button', { name: '创造模式' }).waitFor({ timeout: 10_000 })
     await expect.poll(async () => {
       const response = await scaffold.hostFetch('/api/session/list', {
         method: 'POST',

@@ -6,9 +6,17 @@ import type { InboundMessage, TelegramApiResponse, TelegramUpdate } from '../src
 
 const TOKEN = '123456:TEST-TOKEN'
 
-function apiResponse<T>(result: T): Response {
+function apiResponse(result: unknown): Response {
   return new Response(JSON.stringify({ ok: true, result }))
 }
+
+/** The fetched URL in string form, whatever fetch accepted. */
+const urlText = (url: string | URL | Request): string =>
+  typeof url === 'string' ? url : url instanceof URL ? url.href : url.url
+
+/** The request body parsed as JSON; the client sends only JSON strings. */
+const sentBody = (init?: RequestInit): unknown =>
+  JSON.parse(typeof init?.body === 'string' ? init.body : 'null') as unknown
 
 interface UpdateOverrides {
   updateId?: number
@@ -46,9 +54,9 @@ describe('TelegramBotApiClient', () => {
   it('posts JSON to the token-scoped method URL and unwraps the envelope', async () => {
     const calls: { url: string; body: unknown }[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      calls.push({ url: urlText(url), body: sentBody(init) })
       return apiResponse({ id: 42, username: 'dsh_bot' })
-    }) as unknown as typeof fetch)
+    }))
 
     const client = new TelegramBotApiClient(TOKEN)
     await expect(client.getMe()).resolves.toEqual({ id: 42, username: 'dsh_bot' })
@@ -58,7 +66,7 @@ describe('TelegramBotApiClient', () => {
   it('normalizes failures into typed errors carrying code and retry-after', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: false, error_code: 429, description: 'Too Many Requests', parameters: { retry_after: 3 },
-    }), { status: 429 })) as unknown as typeof fetch)
+    }), { status: 429 })))
 
     const client = new TelegramBotApiClient(TOKEN)
     const failure = await client.sendMessage(1, 'hi').then(() => undefined, (error: unknown) => error)
@@ -70,7 +78,7 @@ describe('TelegramBotApiClient', () => {
   it('marks 409 envelopes as conflicts', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request',
-    }), { status: 409 })) as unknown as typeof fetch)
+    }), { status: 409 })))
     const client = new TelegramBotApiClient(TOKEN)
     await expect(client.getUpdates(0, 0)).rejects.toMatchObject({ conflict: true })
   })
@@ -131,11 +139,11 @@ describe('pollMessages', () => {
     let served = 0
     const offsets: number[] = []
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      offsets.push((JSON.parse(String(init?.body)) as { offset: number }).offset)
+      offsets.push((sentBody(init) as { offset: number }).offset)
       const payload = batches[Math.min(served, batches.length - 1)] as TelegramApiResponse<TelegramUpdate[]>
       served += 1
       return new Response(JSON.stringify(payload))
-    }) as unknown as typeof fetch)
+    }))
     return {
       offsets,
       run: (onMessage, signal) => pollMessages({
@@ -173,7 +181,7 @@ describe('pollMessages', () => {
         }), { status: 429 })
       }
       return apiResponse([makeUpdate({ updateId: 7, text: 'recovered' })])
-    }) as unknown as typeof fetch)
+    }))
 
     const controller = new AbortController()
     await pollMessages({
@@ -190,7 +198,7 @@ describe('pollMessages', () => {
   it('surfaces a getUpdates conflict instead of retrying it', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: false, error_code: 409, description: 'Conflict',
-    }), { status: 409 })) as unknown as typeof fetch)
+    }), { status: 409 })))
     await expect(pollMessages({
       client: new TelegramBotApiClient(TOKEN),
       onMessage: async () => {},
@@ -201,9 +209,9 @@ describe('pollMessages', () => {
   it('returns cleanly when aborted mid-backoff', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       throw new TypeError('network unreachable')
-    }) as unknown as typeof fetch)
+    }))
     const controller = new AbortController()
-    setTimeout(() => controller.abort(), 20)
+    setTimeout(() => { controller.abort() }, 20)
     await expect(pollMessages({
       client: new TelegramBotApiClient(TOKEN),
       onMessage: async () => {},

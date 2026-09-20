@@ -143,9 +143,12 @@ function validateStarted(
 
 /** Validate every persist record already present in one loaded session. */
 function validateSession(session: Session, fail: InvariantFailure): void {
-  for (const [index, event] of session.events.entries()) {
-    if (event.type === 'llm/persist') validatePersist(session.events.slice(0, index), event, fail)
-    else if (event.type === 'llm/persist-started') validateStarted(session.events.slice(0, index), event, fail)
+  // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+  for (const [index, event] of session.snapshotEvents().entries()) {
+    // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+    if (event.type === 'llm/persist') validatePersist(session.snapshotEvents().slice(0, index), event, fail)
+    // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+    else if (event.type === 'llm/persist-started') validateStarted(session.snapshotEvents().slice(0, index), event, fail)
   }
 }
 
@@ -156,8 +159,10 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   ctx.on('internal/dispatch', (_mode, eventName, args) => {
     if (eventName !== 'session/event') return
     const [session, event] = args as [Session, SessionEvent]
-    if (event.type === 'llm/persist') validatePersist(session.events, event, fail)
-    else if (event.type === 'llm/persist-started') validateStarted(session.events, event, fail)
+    // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+    if (event.type === 'llm/persist') validatePersist(session.snapshotEvents(), event, fail)
+    // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+    else if (event.type === 'llm/persist-started') validateStarted(session.snapshotEvents(), event, fail)
   }, { global: true })
 }, { inject: ['sessions'] })
 

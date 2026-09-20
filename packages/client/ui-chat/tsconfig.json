@@ -12,6 +12,9 @@
       "path": "../../../vendor/cordis"
     },
     {
+      "path": "../../../vendor/schemastery"
+    },
+    {
       "path": "../../api/remotes/tsconfig.client.json"
     },
     {
@@ -48,13 +51,16 @@
       "path": "../../llm/token-meter"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
-    },
-    {
       "path": "../../util/workspace-path"
     },
     {
       "path": "../../session/session-stats"
+    },
+    {
+      "path": "../../session/session-turn-outline"
+    },
+    {
+      "path": "../../subagent/subagent"
     },
     {
       "path": "../../settings/settings"
@@ -84,6 +90,12 @@
       "path": "../ui-session"
     },
     {
+      "path": "../ui-sidebar-browser"
+    },
+    {
+      "path": "../ui-sidebar-right"
+    },
+    {
       "path": "../ui-settings"
     },
     {
@@ -91,6 +103,12 @@
     },
     {
       "path": "../ui-workspace"
+    },
+    {
+      "path": "../ui-sidebar-documentpreview/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-input-trigger"
     }
   ]
 }

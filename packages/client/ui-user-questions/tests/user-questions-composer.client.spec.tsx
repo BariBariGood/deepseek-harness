@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { useSyncExternalStore } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -10,7 +11,12 @@ import { en, zh } from '../src/client/locales.ts'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 
+// Every session-scope fixture carries the resource hook the resources plugin merges into GlobalStandardProps.
+const useResource = (() => ({ status: 'none' as const, value: undefined, failure: undefined, reload: () => {} })) as GlobalStandardProps['useResource']
+const usePanelInfo: GlobalStandardProps['usePanelInfo'] = selector => selector({ activePanelId: null })
+
 afterEach(cleanup)
+
 
 const SID = 's1' as SessionId
 
@@ -22,11 +28,10 @@ type ConversationState = Parameters<Parameters<QuestionComposerProps['useConvers
 type ChatState = Parameters<Parameters<QuestionComposerProps['useChat']>[0]>[0]
 type TrajectoryState = Parameters<Parameters<QuestionComposerProps['useTrajectory']>[0]>[0]
 type InputState = Parameters<Parameters<QuestionComposerProps['useInput']>[0]>[0]
-type AttentionState = Parameters<Parameters<QuestionComposerProps['useSessionPendingInteraction']>[0]>[0]
+type AttentionState = Parameters<Parameters<QuestionComposerProps['useSessionStatus']>[0]>[0]
 
 const sessionState: SessionState = {
   sessionId: SID,
-  queue: [],
   pendingSubmissions: [],
   running: false,
   subagent: null,
@@ -43,12 +48,10 @@ const sessionState: SessionState = {
 }
 const sessionList = {
   ids: [SID],
-  byId: { [SID]: { id: SID, displayTitle: 'Session', running: false, blank: false, updatedAt: 0 } },
-  current: SID,
+  byId: { [SID]: { id: SID, displayTitle: 'Session', running: false, retainedBy: {}, blank: false, updatedAt: 0 } },
   phase: 'ready' as const,
   subagentsByParent: {},
   jobsBySession: {},
-  currentAddress: undefined,
 }
 const attentionState: AttentionState = new Map()
 const workspaceState = {
@@ -63,9 +66,15 @@ const conversationState: ConversationState = {
   activeTargets: new Set(),
 }
 const emptyKeys: readonly string[] = []
+const emptyNodeSource = { getSnapshot: () => undefined, subscribe: () => () => {} }
 const chatState: ChatState = {
   order: emptyKeys,
-  nodes: { get: () => undefined, values: () => [] },
+  nodes: {
+    get: () => undefined,
+    source: () => emptyNodeSource,
+    processSource: () => emptyNodeSource,
+    values: () => [],
+  },
   locations: { getTurn: () => emptyKeys, getStep: () => emptyKeys },
   navigation: { items: () => [] },
   timeline: { turnOrder: [], turns: new Map() },
@@ -87,7 +96,7 @@ const trajectoryState: TrajectoryState = {
 }
 const inputState: InputState = {
   draft: '',
-  imageIds: [],
+  attachmentIds: [],
   draftRev: 0,
   phase: 'plain',
   occurrences: [],
@@ -98,12 +107,16 @@ const inputState: InputState = {
  *  the composed props type mandates delivery of the rest (framework hooks are
  *  plain stubs per the client testing discipline). */
 const kitBase: Omit<QuestionComposerProps, 'matched' | 'useStore' | 'actions'> = {
+  renderSlot: () => null,
+  SessionProvider: ({ children }) => children,
   session: undefined,
   sessionId: SID,
   pendingInteraction: undefined,
   useSession: selector => selector(sessionState),
   useSessions: selector => selector(sessionList),
-  useSessionPendingInteraction: selector => selector(attentionState),
+  usePanelInfo, useResource,
+  useSessionStatus: selector => selector(attentionState),
+  useSessionRetainInfo: () => undefined,
   useWorkspaces: selector => selector(workspaceState),
   useConversation: selector => selector(conversationState),
   useChat: selector => selector(chatState),
@@ -112,9 +125,9 @@ const kitBase: Omit<QuestionComposerProps, 'matched' | 'useStore' | 'actions'> =
   useInput: selector => selector(inputState),
   inputActions: {
     setDraft: () => { throw new Error('unused') },
-    addImages: () => { throw new Error('unused') },
-    removeImage: () => { throw new Error('unused') },
-    pruneImages: () => { throw new Error('unused') },
+    addAttachments: () => { throw new Error('unused') },
+    removeAttachment: () => { throw new Error('unused') },
+    pruneAttachments: () => { throw new Error('unused') },
     submit: () => { throw new Error('unused') },
   },
   // The seat's key domain is question ∪ common.
@@ -234,9 +247,9 @@ describe('QuestionComposer', () => {
     expect((screen.getByText('下一题').closest('button') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByRole('radio', { name: '研究潜力型' }))
     expect(screen.getByText('2 / 3')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '跳过本题' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳过' }))
     expect(screen.getByText('3 / 3')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '跳过本题' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳过' }))
 
     expect(answer).toHaveBeenCalledWith(answerBatch([
       { id: 'profile', selected: ['研究潜力型'] },
@@ -333,7 +346,7 @@ describe('QuestionComposer', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '放弃整组问题' }))
     expect(await screen.findByText('第一次取消失败')).toBeTruthy()
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '跳过本题' }).disabled).toBe(false)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '跳过' }).disabled).toBe(false)
 
     fireEvent.click(screen.getByRole('button', { name: '放弃整组问题' }))
     expect(await screen.findByText('第二次取消失败')).toBeTruthy()
@@ -374,7 +387,7 @@ describe('QuestionComposer', () => {
     const { carrier } = wait([{ id: 'detail', question: '补充你的要求' }])
     render(<QuestionComposer matched={carrier} {...kit} t={seatOver(en, commonEn)} />)
     expect(screen.getByLabelText('Dismiss all questions')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Skip this question' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Skip' })).toBeTruthy()
     expect(screen.getByPlaceholderText('Type your answer')).toBeTruthy()
   })
 

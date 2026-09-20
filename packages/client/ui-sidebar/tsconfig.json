@@ -18,7 +18,13 @@
       "path": "../ui-slots"
     },
     {
+      "path": "../store"
+    },
+    {
       "path": "../ui-primitives"
+    },
+    {
+      "path": "../ui-conversation"
     },
     {
       "path": "../ui-renderer"
@@ -31,9 +37,6 @@
     },
     {
       "path": "../locale"
-    },
-    {
-      "path": "../../runtime-diagnostics/invariants"
     }
   ]
 }

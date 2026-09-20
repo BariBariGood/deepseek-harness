@@ -110,12 +110,12 @@ describe('real Loader composition', () => {
 
     const adapter = new EmptyOnceAdapter()
     loaded.llm.registerAdapter(['mock'], adapter)
-    const agent = loaded.agentLoop.create(SessionId('loader-persist'), { provider: 'mock', model: 'mock' })
+    const agent = await loaded.agentLoop.create(SessionId('loader-persist'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'recover' }], source: { kind: 'user' } }))
     await agent.whenIdle()
 
     expect(adapter.requests).toBe(2)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist')).toHaveLength(1)
     expect(agent.session.deriveMessages().at(-1)).toMatchObject({
       role: 'assistant',
       content: [{ type: 'text', text: 'recovered' }],

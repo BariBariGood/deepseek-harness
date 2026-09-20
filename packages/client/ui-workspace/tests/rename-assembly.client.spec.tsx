@@ -15,9 +15,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import type { ISession } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { SessionSeq, type SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
-import { RemoteError, SlotTestRuntime, TestRemote, usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
+import { RemoteError, SlotTestRuntime, usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-workspace/client'
 
@@ -33,12 +33,12 @@ beforeEach(() => { localStorage.clear() })
 /** Runtime with the locale face installed (the browser entry declares `locale:` — zh default backs the t seat). */
 async function createRuntime(): Promise<SlotTestRuntime> {
   const runtime = await SlotTestRuntime.create()
+  runtime.ctx.provide('layout', { selectPanel: vi.fn() })
   runtime.releaseWorkspaceSource()
   // The rename flow never picks a directory; the namespace only has to be there
   // for ui-workspace's inject to settle.
   const directoryPicker = {}
-  Object.assign(new TestRemote(runtime.ctx), { directoryPicker })
-  runtime.ctx.provide('remote.directoryPicker', directoryPicker as never)
+  runtime.remote.provideNamespaces({ directoryPicker })
   const locale = new LocaleRuntime(runtime.ctx)
   runtime.ctx.provide('locale', locale)
   runtime.slots.installLocale(locale)
@@ -55,13 +55,14 @@ describe('session rename through the assembled browser', () => {
   it('renames via the row menu: binding.session.rename fires, the dialog closes, the row re-labels from the list', async () => {
     const runtime = await createRuntime()
     const rename = vi.fn<ISession['rename']>(async title => ({
-      ok: true, value: { title: title.trim().replace(/\s+/g, ' '), seq: 7 },
+      ok: true, value: { title: title.trim().replace(/\s+/g, ' '), seq: SessionSeq(7) },
     }))
     await runtime.sessions.add({
       id: SID,
       summary: { title: '旧标题', displayTitle: '旧标题', cwd: '/w/alpha' },
       session: { rename },
     })
+    await runtime.sessions.retainFor(runtime.ctx, SID, { source: 'mainView' }).ready
     await runtime.workspaces.update((draft) => {
       draft.items = [{
         workspaceId: 'w1' as WorkspaceId, title: 'alpha', path: '/w/alpha',
@@ -109,6 +110,7 @@ describe('session rename through the assembled browser', () => {
       summary: { title: '旧标题', displayTitle: '旧标题', cwd: '/w/alpha' },
       session: { rename },
     })
+    await runtime.sessions.retainFor(runtime.ctx, SID, { source: 'mainView' }).ready
     await runtime.workspaces.update((draft) => {
       draft.items = [{
         workspaceId: 'w1' as WorkspaceId, title: 'alpha', path: '/w/alpha',

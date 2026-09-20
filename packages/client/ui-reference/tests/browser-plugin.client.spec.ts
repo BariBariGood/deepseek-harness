@@ -74,9 +74,15 @@ async function bench(
       mention: '@[Research](dsh-session:InNvdXJjZSI)',
     }],
   })),
-  listed: Record<string, { updatedAt: number }> = {},
+  listed: Record<string, {
+    updatedAt: number
+    origin?: 'subagent'
+    parentId?: SessionId
+    projectionValues?: { title?: string | null }
+  }> = {},
 ): Promise<{ ctx: Context; fiber: ReturnType<Context['plugin']>; source: InputTriggerSource }> {
   const ctx = new Context()
+  ctx.provide('sidebarRight', { openResource: vi.fn() })
   let source: InputTriggerSource | undefined
   ctx.provide('inputTriggers', {
     registerSource(candidate: InputTriggerSource) {
@@ -106,11 +112,12 @@ describe('apply', () => {
   it('declares its services and releases the @ reference registration on disposal', async () => {
     expect(inject).toEqual([
       'inputTriggers', 'locale', 'sessions', 'remote', 'remote.fileReferences',
-      'remote.sessionReferenceResolver',
+      'remote.sessionReferenceResolver', 'sidebarRight',
     ])
     const { fiber } = await bench()
     let registered: InputTriggerSource | undefined
     const ctx = new Context()
+    ctx.provide('sidebarRight', { openResource: vi.fn() })
     ctx.provide('inputTriggers', {
       registerSource(source: InputTriggerSource) {
         registered = source
@@ -328,6 +335,63 @@ describe('candidates', () => {
     ])
   })
 
+  it('uses current Session titles and groups direct subagents above ordinary Sessions', async () => {
+    const files = vi.fn(() => Promise.resolve({ ok: true as const, value: [] }))
+    const sessions = vi.fn(() => Promise.resolve({
+      ok: true as const,
+      value: [
+        {
+          sessionId: sid('ordinary'),
+          label: 'Ordinary title',
+          displayTitle: 'Ordinary title',
+          cwd: `${HOME}/project`,
+          sameWorkspace: true,
+          createdAt: CREATED_AT,
+          mention: '@[Ordinary title](dsh-session:Im9yZGluYXJ5Ig)',
+        },
+        {
+          sessionId: sid('worker'),
+          label: 'Investigate startup',
+          displayTitle: 'researcher',
+          cwd: `${HOME}/project`,
+          sameWorkspace: true,
+          createdAt: CREATED_AT,
+          mention: '@[researcher](dsh-session:IndvcmtlciI)',
+        },
+      ],
+    }))
+    const { source } = await bench(files, sessions, {
+      worker: {
+        updatedAt: UPDATED_AT,
+        origin: 'subagent', parentId: session.sessionId,
+        projectionValues: { title: 'Investigate startup' },
+      },
+      ordinary: { updatedAt: UPDATED_AT, projectionValues: { title: 'Ordinary title' } },
+    })
+    const candidates = await source.candidates(session, request('worker'))
+    expect(candidates.map(candidate => ({ name: candidate.name, section: candidate.section }))).toEqual([
+      { name: 'researcher', section: 'Subagents' },
+      { name: 'Ordinary title', section: 'Sessions' },
+    ])
+    const [candidate] = candidates
+    expect(source.onPick({
+      candidate: candidate!,
+      session,
+      position: 'inline',
+      via: 'menu',
+      action: 'pick',
+      span: { start: 0, end: 7, draftRev: 1 },
+    })).toEqual({
+      insert: {
+        source: 'reference',
+        ref: '@[researcher](dsh-session:IndvcmtlciI)',
+        label: 'researcher',
+        appearance: 'session',
+        clipboardText: '@[researcher](dsh-session:IndvcmtlciI)',
+      },
+    })
+  })
+
   it('reads a session opened moments ago as the present, not a zero distance', async () => {
     const files = vi.fn(() => Promise.resolve({ ok: true as const, value: [] }))
     const sessions = vi.fn(() => Promise.resolve({
@@ -501,5 +565,20 @@ describe('pick and codec', () => {
   it('ignores candidates that do not carry a source-owned value', async () => {
     const { source } = await bench()
     expect(pick(source, { name: 'foreign candidate' })).toBeUndefined()
+  })
+})
+
+describe('reference preview', () => {
+  it('opens plain and quoted file references without treating folders or sessions as files', async () => {
+    const { ctx, source, fiber } = await bench()
+    const openResource = vi.spyOn(ctx.sidebarRight, 'openResource')
+    expect(source.openReference?.(session, { ref: '@notes/readme.md', appearance: 'file' })).toBe(true)
+    expect(source.openReference?.(session, { ref: '@"docs/a b.md"', appearance: 'file' })).toBe(true)
+    expect(openResource).toHaveBeenNthCalledWith(1, 'dsh-resource://file/session/target/notes/readme.md')
+    expect(openResource).toHaveBeenNthCalledWith(2, 'dsh-resource://file/session/target/docs/a%20b.md')
+    expect(source.openReference?.(session, { ref: '@docs/', appearance: 'folder' })).toBe(false)
+    expect(source.openReference?.(session, { ref: '@[Research](dsh-session:abc)', appearance: 'session' })).toBe(false)
+    expect(openResource).toHaveBeenCalledTimes(2)
+    await fiber.dispose()
   })
 })

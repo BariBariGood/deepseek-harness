@@ -30,11 +30,12 @@ afterEach(async () => {
 /** Two-provider ok fixture served by the stubbed transport. */
 const fetchFixture = (): typeof fetch =>
   (async (url: string | URL | Request) => {
-    const body = String(url).includes('openrouter')
+    const fetched = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url
+    const body = fetched.includes('openrouter')
       ? { data: { total_credits: 50, total_usage: 12.5 } }
       : { usage: { rolling: { percent: 25, resetsAt: '2026-08-22T18:00:00.000Z' } } }
     return new Response(JSON.stringify(body))
-  }) as unknown as typeof fetch
+  })
 
 interface CompositionOptions {
   /**
@@ -160,7 +161,7 @@ describe('usage gateway through a real Loader composition', () => {
   })
 
   it('turns provider failures into per-provider error entries', async () => {
-    vi.stubGlobal('fetch', (async () => new Response('denied', { status: 401 })) as unknown as typeof fetch)
+    vi.stubGlobal('fetch', (async () => new Response('denied', { status: 401 })))
     const ctx = await loadComposition({
       keys: { OPENROUTER_API_KEY: 'router-key', OPENCODE_GO_API_KEY: 'go-key' },
     })
@@ -172,14 +173,25 @@ describe('usage gateway through a real Loader composition', () => {
   })
 
   it('reads no credentials when the seam is absent and the environment is bare', async () => {
-    vi.stubGlobal('fetch', fetchFixture())
-    const ctx = await loadComposition()
+    // A developer shell with real provider keys must not read as configured.
+    const scrubbed = ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEY']
+    const saved = scrubbed.map(name => [name, process.env[name]] as const)
+    for (const [name] of saved) Reflect.deleteProperty(process.env, name)
+    try {
+      vi.stubGlobal('fetch', fetchFixture())
+      const ctx = await loadComposition()
 
-    const snapshot = await ctx.usage.get()
-    expect(snapshot.reports).toEqual([
-      { provider: 'openrouter', code: 'unconfigured' },
-      { provider: 'opencode-go', code: 'unconfigured' },
-    ] satisfies UsageReport[])
+      const snapshot = await ctx.usage.get()
+      expect(snapshot.reports).toEqual([
+        { provider: 'openrouter', code: 'unconfigured' },
+        { provider: 'opencode-go', code: 'unconfigured' },
+      ] satisfies UsageReport[])
+    } finally {
+      for (const [name, value] of saved) {
+        if (value !== undefined) process.env[name] = value
+        else delete process.env[name]
+      }
+    }
   })
 
   it('withdraws the endpoint when the plugin fiber is disposed', async () => {

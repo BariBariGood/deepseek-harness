@@ -20,6 +20,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import picomatch from 'picomatch'
 import { FiberState } from '@deepseek-ai/cordis'
 import { createNodeBuiltins, REPLACED_PREFIXES } from '@deepseek-ai/dsh-experimental-webworker-runtime/src/node/builtins.ts'
 import {
@@ -30,16 +31,25 @@ import { loadVfsImage } from '@deepseek-ai/dsh-experimental-webworker-runtime/sr
 import { setActiveVfs } from '@deepseek-ai/dsh-experimental-webworker-runtime/src/storage/active.ts'
 import { indexWorkspacePackages, previewFixtures } from '../src/repository.ts'
 import { DEFAULT_ROOT, MANIFEST_PATH, packVfsImage, packVfsOverlay } from '../src/pack.ts'
+import { PAGE_ASSETS } from '../src/rules.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url))
 
 /** A leaf workspace package: real build output, no dependencies to drag in. */
 const SUBJECT = '@deepseek-ai/dsh-timeout'
-const LANDLOCK = '@deepseek-ai/node-addon-landlock-run'
+const LANDLOCK = '@deepseek-ai/node-addon-system'
+const LANDLOCK_ENTRY = `${LANDLOCK}/landlock-run`
 const PLUGIN_INVENTORY = '@deepseek-ai/dsh-plugin-package-inventory-deepseek'
 const WEB_SERVER = '@deepseek-ai/dsh-host-webserver'
 
 const workspaces = indexWorkspacePackages(repoRoot)
+
+it.each([
+  'node_modules/plain/lib/client.pdf.js',
+  'node_modules/@scope/plugin/lib/client.terminal.js',
+])('keeps page-owned Client chunk %s outside the Worker reachability sweep', (path) => {
+  expect(picomatch([...PAGE_ASSETS], { dot: true })(path)).toBe(true)
+})
 
 describe('preview example overlays', () => {
   it('packs source-looking paths and dot directories into a separate overlay', () => {
@@ -50,7 +60,7 @@ describe('preview example overlays', () => {
       .toContain("previewStatus = 'ready'")
     expect(new TextDecoder().decode(result.files['workspace/.agents/skills/preview-tour/SKILL.md']))
       .toContain('name: preview-tour')
-    expect(Object.keys(result.files).filter(path => path.endsWith('/session.jsonl'))).toHaveLength(3)
+    expect(Object.keys(result.files).filter(path => path.endsWith('/session.v3.jsonl'))).toHaveLength(3)
   })
 
   it('fails loud when a declared seed tree is absent', () => {
@@ -68,12 +78,28 @@ describe('preview example overlays', () => {
 })
 
 /**
- * The pack consumes built `lib/` output. An unbuilt checkout (the unit
- * coverage lane runs before any build) self-skips. Native Windows routes this
- * suite through its post-build uninstrumented gate, and preview builds exercise
- * the same path against complete real artifacts.
+ * The pack consumes built `lib/` output. An unbuilt checkout (both coverage
+ * lanes run before any build) self-skips; the serial-windows complete
+ * reference routes this suite through its post-build uninstrumented gate, and
+ * preview builds exercise the same path against complete real artifacts.
  */
-const subjectBuilt = existsSync(join(repoRoot, 'packages/util/timeout/lib/index.js'))
+// The subject is zero-dep, but its peer/dependency closure (cordis, loader,
+// include, cosmokit, invariants) must also be built: on the complete lane
+// build and coverage run concurrently, so checking only the subject lets the
+// pack start before its real workspace dependencies exist.
+const subjectBuilt = [
+  'packages/util/timeout/lib/index.js',
+  'packages/runtime-diagnostics/invariants/lib/index.js',
+  'vendor/cordis/lib/index.js',
+  'vendor/cosmokit/lib/index.js',
+  'vendor/include/lib/index.js',
+  'vendor/loader/lib/index.js',
+  'packages/host/webserver/lib/index.js',
+  'packages/llm/plugin-package-inventory-deepseek/lib/index.js',
+  'native/system/packages/entry/lib/index.js',
+  'packages/preset/agent-presets/lib/typert.host.js',
+  'packages/preset/agent-presets/lib/typert.remote-client.js',
+].every(path => existsSync(join(repoRoot, path)))
 
 let memo: ReturnType<typeof packVfsImage> | undefined
 const packed = (): ReturnType<typeof packVfsImage> => memo ??= packVfsImage({
@@ -224,7 +250,7 @@ const archive = async (): Promise<Uint8Array> =>
     expect(result.packages.has(LANDLOCK)).toBe(true)
     expect(result.missing).toEqual([])
     expect(Object.hasOwn(result.files, `node_modules/${LANDLOCK}/lib/index.js`)).toBe(true)
-    expect(createNodeBuiltins()[LANDLOCK]).toBeUndefined()
+    expect(createNodeBuiltins()[LANDLOCK_ENTRY]).toBeUndefined()
 
     const vfs = loadVfsImage(await inflateImage(result.image, 'the packed Landlock package'), DEFAULT_ROOT)
     const loader = new WorkerModuleLoader({
@@ -235,7 +261,7 @@ const archive = async (): Promise<Uint8Array> =>
     })
     setActiveVfs(vfs)
     setActiveModuleLoader(loader)
-    const landlock = loader.requireFrom(`${DEFAULT_ROOT}/workspace`)(LANDLOCK) as {
+    const landlock = loader.requireFrom(`${DEFAULT_ROOT}/workspace`)(LANDLOCK_ENTRY) as {
       LAUNCHER_BIN: string
       LAUNCHER_FAILURE_EXIT: number
       launcherPath(): string
@@ -288,6 +314,10 @@ const archive = async (): Promise<Uint8Array> =>
     inventory.apply({
       baseUrl,
       loader: tree,
+      get: (name: string): undefined => {
+        expect(name).toBe('pluginPackages')
+        return undefined
+      },
       deepseekLlmApiExtensions: {
         register: (field: string, contribution: { readonly prepare: Prepare }): void => {
           expect(field).toBe('dsh_plugin_packages')

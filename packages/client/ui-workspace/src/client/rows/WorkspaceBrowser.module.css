@@ -23,6 +23,7 @@
   height: 28px;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
@@ -139,6 +140,7 @@
   box-sizing: border-box;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   background: transparent;
   cursor: text;
   color: var(--dsw-alias-label-secondary);
@@ -155,7 +157,7 @@
   height: 30px;
   margin-inline: -2px;
   padding: 0 4px 0 0;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   border-radius: 10px;
   background: transparent;
   color: var(--dsw-alias-label-caption);
@@ -170,6 +172,7 @@
   height: 28px;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
@@ -223,6 +226,7 @@
   height: 24px;
   border: none;
   border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
@@ -251,6 +255,8 @@
 .rail .iconButton {
   width: 36px;
   height: 36px;
+  /* Rail hovers share the shell rail's 12px rounding. */
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -260,6 +266,9 @@
   padding: 0;
   margin: 0 0 12px;
   gap: 0;
+  /* The collapsed search frame clips its button's hover, so it must carry the
+     rail's 12px rounding itself. */
+  border-radius: 12px;
   border-color: transparent;
   background: transparent;
 }
@@ -267,6 +276,7 @@
 .rail .searchButton {
   width: 36px;
   height: 36px;
+  border-radius: 12px;
   color: var(--dsw-alias-label-primary);
 }
 
@@ -313,6 +323,12 @@
   height: 24px;
   background: linear-gradient(to bottom, transparent, var(--dsw-specific-sidebar-fill));
   pointer-events: none;
+}
+
+/* macOS desktop: the sidebar is translucent over window vibrancy, so the
+   opaque fill gradient would paint a solid smear instead of a fade. */
+:global([data-platform='darwin']) .fade {
+  display: none;
 }
 
 /* Wide-only content fades back in on expand remount (mirrors the shell). */
@@ -426,7 +442,7 @@
   height: 28px;
   border: none;
   border-radius: 8px;
-  padding: 0 12px 0 28px;
+  padding: 0 12px 0 calc(28px + var(--dsh-workspace-indent, 0px));
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -455,7 +471,7 @@
   width: 100%;
   height: 44px;
   padding: 7px 14px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l4);
   border-radius: 22px;
   outline: none;
   background: transparent;

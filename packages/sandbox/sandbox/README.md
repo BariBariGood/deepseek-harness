@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-`dsh-sandbox` confines same-world subprocesses to a file-effect policy: commands run `read-only`, write only under the session workspace (`workspace-write`), or run unrestricted (`danger-full-access`), and every confined execution runs under a per-call policy. The bash and pwsh executors consume it, so a command — and everything it spawns — runs confined without the consumer knowing which platform runner is behind it. When the requested mode cannot be enforced, the call fails closed with a `SANDBOX_UNAVAILABLE` error instead of running unconfined. A denied call can request a strictly wider mode that a human approves once. Confinement is same-world only — backends share the host kernel and filesystem, while containers, microVMs, and remote executors replace whole capabilities instead.
+Use `dsh-sandbox` to run a subprocess and everything it spawns under a per-call file-access policy. A command can run without writes (`read-only`), write only inside its workspace (`workspace-write`), or run unrestricted (`danger-full-access`). If the requested mode cannot be enforced, the call fails with `SANDBOX_UNAVAILABLE` instead of running unconfined. After a denied call, the model can request one strictly wider mode for human approval. This is same-world confinement: the process still shares the host kernel and filesystem; use a container, microVM, or remote executor when the whole environment must be isolated.
 
 ## Table of Contents
 
@@ -63,7 +63,7 @@ Enforcement is reported per call: `full` means the backend governs every promise
 
 ### Denied calls and escalation
 
-When a confined call is denied, the operation reports a denial marker naming the mode — `[sandbox: file access denied under <mode> mode]` — and, when the composition advertises escalation, an escalation hint. The model may retry the exact call once with `sandbox_permissions` (the narrowest wider mode that suffices) plus a `justification`; the user sees one approval prompt and can allow once, reject, or cancel. The escalation must be strictly wider than the call's effective mode, and it applies to that one call only.
+When a confined call is denied, the operation reports a denial marker naming the mode — `[sandbox: file access denied under <mode> mode]` — and, when the composition advertises escalation, an escalation hint. The model may retry the exact call once with `sandbox_permissions` (the narrowest wider mode that suffices) plus a `justification`; the user sees one approval prompt and can allow once, reject, or cancel. A wider mode requires approval and applies to that one call only. Repeating the call's effective mode succeeds without approval; narrower targets remain invalid.
 
 ### Fail-closed behavior
 
@@ -81,9 +81,9 @@ This section explains the design decisions behind the contract and points at the
 
 ### Design philosophy
 
-- **Same-world by contract.** `ctx.sandbox` wraps argv under a host-path file policy; containers, microVMs, and remote execution replace the surrounding capability seam instead.
+- **One execution world.** The filesystem, subprocess and sandbox providers operate on the same filesystem and kernel. Remote compositions replace all three providers; confinement resolves asynchronously in that world.
 - **Policy rides the call.** `SandboxPolicy` is carried per call, never fixed on the provider: two consumers may confine under different policies at the same instant, and an escalated retry is a new call with a wider policy. Defaulting and resolution are explicit consumer steps.
-- **Fail closed.** `confine()` returns enforcing argv or throws `SandboxUnavailableError`; silent unconfined passthrough is forbidden, and functional probes arbitrate multi-runner chains.
+- **Fail closed.** `confine()` resolves to enforcing argv or rejects with `SandboxUnavailableError`; silent unconfined passthrough is forbidden, and functional probes arbitrate multi-runner chains.
 - **One vocabulary for denial and escalation.** The marker and hint texts and the strictly-wider ladder live here so the bash and fs families cannot drift apart.
 
 ### Source map
@@ -93,11 +93,11 @@ This section explains the design decisions behind the contract and points at the
 | [`src/index.ts`](src/index.ts) | Plugin entry: `SandboxProvider` service, mode/enforcement/policy types, fail-closed error |
 | [`src/escalation.ts`](src/escalation.ts) | Escalation vocabulary: wider-mode ladder, argument validation, denial and hint markers, approval choreography |
 | [`src/roots.ts`](src/roots.ts) | Writable-root derivation shared by the Seatbelt profile and the in-process fs fence |
-| [`src/invariant.ts`](src/invariant.ts) | Invariant companion (no runtime invariant; the abstract seam registers no event or data relation) |
+| — | No runtime invariant companion is published; this package exposes no independent event sequence or mutable data relation beyond contracts enforced at its owning seam. |
 
 ### Escalation choreography
 
-The ladder is a closed table — `read-only` may escalate to `workspace-write` or `danger-full-access`, `workspace-write` only to `danger-full-access` — checked at execution, never baked into a tool schema, whose enum stays the closed target vocabulary. [`approveEscalation`](src/escalation.ts) validates the `sandbox_permissions`/`justification` pairing, rejects non-widening requests without prompting a human, and maps every approval outcome to its own error before anything executes.
+The ladder is a closed table — `read-only` may escalate to `workspace-write` or `danger-full-access`, `workspace-write` only to `danger-full-access` — checked at execution, never baked into a tool schema, whose enum stays the closed target vocabulary. [`approveEscalation`](src/escalation.ts) returns the current mode without approval when it is repeated, rejects narrower or unsupported targets, and requests approval for wider modes. Callers validate the `sandbox_permissions`/`justification` pairing first.
 
 ### Writable roots
 
@@ -141,7 +141,7 @@ Conditional error text is visible for that call and retained in history until co
 
 #### KV Cache effect
 
-Append-only; newly visible content follows the reusable request prefix and does not invalidate existing KV-cache entries.
+Append-only; newly visible content follows the reusable request prefix and does not invalidate existing KV Cache entries.
 
 ### Escalation request and outcome
 

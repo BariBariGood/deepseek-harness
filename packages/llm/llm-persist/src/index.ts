@@ -197,7 +197,8 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     /* v8 ignore next -- the listener guard above rejects a disposed plugin; a live turn dispatches only while its signal is open */
     if (signal.aborted || lifetime.signal.aborted) return
     const policyKey = persistPolicyKey(codes, backoffConfig)
-    const priorPersist = agent.session.events.findLast((event): event is SessionEvent<'llm/persist'> =>
+    // oxlint-disable-next-line typescript/no-deprecated -- Whole-log inspection; async handle-read migration deferred.
+    const priorPersist = agent.session.snapshotEvents().findLast((event): event is SessionEvent<'llm/persist'> =>
       event.type === 'llm/persist'
       && event.data.turn === turn
       && event.data.step === step

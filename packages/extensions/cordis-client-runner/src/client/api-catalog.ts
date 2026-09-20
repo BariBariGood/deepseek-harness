@@ -83,22 +83,34 @@ export interface TypeApiEntry {
 export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'layout',
-    summary: 'The outward layout face (`ctx.layout`): the panel transitions other plugins may trigger — and exactly what a test fake must supply.',
-    description: 'The outward layout face (`ctx.layout`): the panel transitions other plugins may trigger — and exactly what a test fake must supply. The attachPanels wiring hook stays on the concrete class (root-entry assembly only).',
+    summary: 'Panel navigation and geometry actions exposed through ctx.layout.',
+    description: 'Panel navigation and geometry actions exposed through ctx.layout.',
     methods: [
+      {
+        signature: 'selectPanel(panelId: MainPanelId | null): void',
+        description: 'Select a global central panel without changing the current Session.',
+        parameters: [{ name: 'panelId', description: 'registered main key, or null to show the Conversation.' }],
+        throws: ['if the selected main key is not registered; preserves the current selection.'],
+      },
+      {
+        signature: 'beginNavigation(): AbortSignal',
+        description: 'Start an asynchronous navigation, superseding any earlier pending navigation.',
+        parameters: [],
+        returns: 'a signal aborted by the next navigation or layout disposal; check it before committing UI state.',
+      },
       {
         signature: 'toggleSidebar(): void',
         description: 'Toggle the sidebar panel (closed ⟷ contract default width).',
         parameters: [],
       },
       {
-        signature: 'openDetails(): void',
-        description: 'Open the details panel (no-op when already open).',
-        parameters: [],
+        signature: 'openRightbar(track: boolean, fullscreen: boolean): void',
+        description: 'Report the right panel\'s presentation without changing its expanded state.',
+        parameters: [{ name: 'track', description: 'whether the normal panel width reserves a grid track, including beneath a fullscreen overlay.' }, { name: 'fullscreen', description: 'whether the panel covers the frame and hides its outer resize handle; independent of the underlying grid track.' }],
       },
       {
-        signature: 'closeDetails(): void',
-        description: 'Close the details panel.',
+        signature: 'closeRightbar(): void',
+        description: 'Report the right panel as hidden: no track, no handle.',
         parameters: [],
       },
     ],
@@ -171,14 +183,22 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'The sessions-service face injected as `ctx.sessions`.',
     methods: [
       {
-        signature: 'open(id: SessionId): void',
-        description: 'Select a session as current.',
-        parameters: [{ name: 'id', description: 'session id (must exist in the list; unknown ids fail loud).' }],
+        signature: 'retain(target: SessionTarget, options: SessionRetainOptions): SessionReference',
+        description: 'Retain an exact Client generation and start its shared initial history opening.',
+        parameters: [{ name: 'target', description: 'known identity or durable direct-parent address.' }, { name: 'options', description: 'required consumer source and optional independent waiter cancellation.' }],
+        returns: 'an owned reference immediately; await `reference.ready` when the initial open attempt must settle first.',
       },
       {
-        signature: 'openSubagent(address: SubagentAddress): void',
-        description: 'Open a healthy catalog child through its exact direct-parent address.',
-        parameters: [{ name: 'address', description: 'catalog-derived parent and child ids.' }],
+        signature: 'using<T>(target: SessionTarget, options: SessionRetainOptions, operation: (reference: SessionReference) => T | Promise<T>): Promise<T>',
+        description: 'Hold one reference through callback settlement, including synchronous and asynchronous failures.',
+        parameters: [{ name: 'target', description: 'Session to acquire.' }, { name: 'options', description: 'source and acquisition cancellation.' }, { name: 'operation', description: 'callback using the reference only until its returned value or Promise settles.' }],
+        returns: 'the callback result after release; acquisition and callback failures propagate unchanged.',
+      },
+      {
+        signature: 'retainInfo(id: SessionId): ObservableSnapshot<SessionRetainInfo>',
+        description: 'Observe local reference counts without retaining, creating a scope, or opening history. The returned source keeps stable identity across same-id generations and remains allocated until the Client root is disposed, even after its final subscriber leaves.',
+        parameters: [{ name: 'id', description: 'explicit Session identity; Host existence is not implied.' }],
+        returns: 'a stable read-only source across same-id generations, with zero counts when none is live.',
       },
       {
         signature: 'setSubagentCatalogOpen(parentSessionId: SessionId, open: boolean): void',
@@ -199,22 +219,22 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean }): Promise<SessionId>',
-        description: 'Fork a session from a completed-turn prefix of the source; on resolution the child is in the list store and `open()` can target it.',
+        description: 'Fork a session from a completed-turn prefix of the source; on resolution the child is in the catalog and may be explicitly retained.',
         parameters: [{ name: 'opts', description: 'source session id, the optional event seq anchoring the cut (the boundary is the first turn/end at or after it; an in-log anchor in an open turn is unavailable rather than clipped backward), and whether to increment an inherited durable title before resolving.' }],
         returns: 'the child session id.',
         throws: ['when the fork fails, or when a requested child-title rename fails after creation.'],
       },
       {
         signature: 'scope(id: SessionId): AgentContext | undefined',
-        description: 'Resolve an Agent-scoped context view (use-and-discard).',
+        description: 'Borrow an already-retained Agent-scoped Context without extending its lifetime.',
         parameters: [{ name: 'id', description: 'session id.' }],
-        returns: 'scoped ctx, or undefined for a session neither listed nor already scoped.',
+        returns: 'the live scoped Context, or undefined without a retained generation.',
       },
       {
         signature: 'binding(id: SessionId): SessionBinding | undefined',
-        description: 'Resolve the stable session binding (scope-addressed assembly feed).',
+        description: 'Borrow an already-retained Session binding without extending its lifetime.',
         parameters: [{ name: 'id', description: 'session id.' }],
-        returns: 'binding, or undefined for a session neither listed nor already scoped.',
+        returns: 'the live binding, or undefined without a retained generation.',
       },
     ],
   },
@@ -225,8 +245,14 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     methods: [
       {
         signature: 'declare readonly register: SlotCore[\'register\']',
-        description: 'The single registration API. The typed face IS the core\'s register (both overloads reused verbatim — one authority, no structural copy; see SlotCore.register for children declaration, store seat, inject face, load-time validation, and the unload cascade). This layer adds: disposal through the caller\'s ctx.effect (fiber unload = cascade), exclusive-factory minting (`store: createXxxStore` becomes a per-entry handle), the registrant diagnostics stamp, and store-instance lifecycle on the entry axis.\n\nDeclared here, implemented by prototype assignment below the class: it MUST stay a prototype method (never an instance arrow) — the cordis service proxy binds `this.ctx` to the CALLER\'s context at call time, which is what routes the effect (and the unload cascade) into the caller\'s fiber. An arrow property would freeze `this` to the service\'s own root ctx and silently break per-plugin disposal.',
+        description: 'The ordinary Slot registration API. The typed face IS the core\'s register (both overloads reused verbatim — one authority, no structural copy; see SlotCore.register for children declaration, store seat, inject face, load-time validation, and the unload cascade). This layer adds: disposal through the caller\'s ctx.effect (fiber unload = cascade), exclusive-factory minting (`store: createXxxStore` becomes a per-entry handle), the registrant diagnostics stamp, and store-instance lifecycle on the entry axis.\n\nDeclared here, implemented by prototype assignment below the class: it MUST stay a prototype method (never an instance arrow) — the cordis service proxy binds `this.ctx` to the CALLER\'s context at call time, which is what routes the effect (and the unload cascade) into the caller\'s fiber. An arrow property would freeze `this` to the service\'s own root ctx and silently break per-plugin disposal.',
         parameters: [],
+      },
+      {
+        signature: 'declare readonly registerFactory: RegisterFactory',
+        description: 'Register one reusable Component Factory under the caller\'s effect lifetime. A Store factory mints one handle per rendered occurrence rather than per definition. Like SlotRegistry.register, this remains a prototype method so the Cordis proxy binds `this.ctx` to the caller\'s Context.',
+        parameters: [{ name: 'options', description: 'runtime definition checked against `SlotFactoryMap`.' }, { name: 'component', description: 'reusable Factory Component.' }],
+        returns: 'the idempotent definition disposer.',
       },
       {
         signature: 'inject(key: keyof SlotMap & string, callback: () => SlotInjectionEffect): () => void',
@@ -315,6 +341,23 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Workspace archive and directory operations consumed by Client UI domains.',
     methods: [
       {
+        signature: 'openSession(target: SessionTarget): void',
+        description: 'Select a Session and show its Conversation as one UI navigation action.',
+        parameters: [{ name: 'target', description: 'known Session identity or durable direct-parent subagent address to display.' }],
+      },
+      {
+        signature: 'openWorkspace(workspaceId: WorkspaceId, beforeOpen?: (sessionId: SessionId) => void): Promise<void>',
+        description: 'Connect a Workspace and open its Session unless a later navigation supersedes it.',
+        parameters: [{ name: 'workspaceId', description: 'target Workspace.' }, { name: 'beforeOpen', description: 'optional synchronous preparation for the selected Session, skipped after supersession.' }],
+        returns: 'completion; a superseded request may create a Session but does not open it.',
+      },
+      {
+        signature: 'forkSession(sessionId: SessionId): Promise<void>',
+        description: 'Fork a Session and open the child unless a later navigation supersedes it.',
+        parameters: [{ name: 'sessionId', description: 'source Session.' }],
+        returns: 'completion; a superseded request leaves its child available without selecting it.',
+      },
+      {
         signature: 'connectWorkspace(workspaceId: WorkspaceId): Promise<SessionId>',
         description: 'Resolve the reusable or newly created blank Session for a Workspace.',
         parameters: [{ name: 'workspaceId', description: 'target Workspace.' }],
@@ -329,6 +372,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'archiveSession(sessionId: SessionId): Promise<void>',
         description: 'Archive a Session and clear it when it is the current selection.',
         parameters: [{ name: 'sessionId', description: 'Session to archive.' }],
+      },
+      {
+        signature: 'unarchiveSession(sessionId: SessionId): Promise<void>',
+        description: 'Unarchive a Session, restoring it to its recorded Workspace position.',
+        parameters: [{ name: 'sessionId', description: 'Session to unarchive.' }],
       },
       {
         signature: 'pickDirectory(): Promise<string | null>',
@@ -378,6 +426,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'sessionId', description: 'Session to archive.' }],
       },
       {
+        signature: 'unarchiveSession(sessionId: SessionId): Promise<void>',
+        description: 'Unarchive a Session from the archived Session list.',
+        parameters: [{ name: 'sessionId', description: 'Session to unarchive.' }],
+      },
+      {
         signature: 'insertSessionBefore( workspaceId: WorkspaceId, sessionId: SessionId, beforeSessionId?: SessionId, ): Promise<WorkspaceView>',
         description: 'Move a Session within one Workspace account.',
         parameters: [{ name: 'workspaceId', description: 'owning Workspace.' }, { name: 'sessionId', description: 'Session to move.' }, { name: 'beforeSessionId', description: 'anchor Session; omitted appends.' }],
@@ -409,8 +462,8 @@ export const EVENT_API: readonly EventApiEntry[] = [
     name: 'slots/changed',
     mode: 'emit',
     signature: '\'slots/changed\'(key: string): void',
-    summary: 'A slot declaration or registration set changed.',
-    description: 'A slot declaration or registration set changed.',
+    summary: 'An ordinary Slot declaration or entry registration set changed.',
+    description: 'An ordinary Slot declaration or entry registration set changed. Factory definitions publish through `subscribeFactory()` instead.',
     parameters: [{ name: 'key', description: 'mutated SlotMap key.' }],
   },
   {
@@ -434,12 +487,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type AgentContext = Omit<Context, \'remote\'> & {\n    readonly remote: ClientRemote & TypertRemoteScopeApi<\'agent\'>;\n};',
   },
   {
+    name: 'AssistantLiveChunkEvent',
+    declaration: 'export interface AssistantLiveChunkEvent {\n    readonly type: \'assistant/live-chunk\';\n    readonly seq: number;\n    readonly time: number;\n    readonly data: {\n        readonly attemptId: LlmAttemptId;\n        readonly turn: number;\n        readonly step: number;\n        readonly chunk: StreamChunk;\n    };\n}',
+  },
+  {
     name: 'BakedActions',
     declaration: 'export type BakedActions<T, A extends ActionsDecl<T>> = {\n    [K in keyof A]: A[K] extends (draft: T, ...params: infer P) => void ? (...params: P) => void : never;\n};',
   },
   {
     name: 'BeginSubmissionInput',
-    declaration: 'export interface BeginSubmissionInput {\n    readonly text: string;\n    readonly images: readonly PendingSubmissionImage[];\n    readonly onRetire?: (retirement: PendingSubmissionRetirement) => void;\n}',
+    declaration: 'export interface BeginSubmissionInput {\n    readonly mode: \'queue\' | \'steer\';\n    readonly text: string;\n    readonly attachments: readonly PendingSubmissionAttachment[];\n    readonly onRetire?: (retirement: PendingSubmissionRetirement) => void;\n}',
   },
   {
     name: 'BoundActions',
@@ -462,10 +519,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type ChildrenDecl = {\n    [P in keyof SlotMap & string]?: SlotSpec<SlotMap[P]>;\n};',
   },
   {
-    name: 'ChunkRowEvent',
-    declaration: 'export type ChunkRowEvent = {\n    [Kind in ChunkRow[\'type\']]: {\n        readonly type: `chunkrow/${Kind}`;\n        readonly seq: number;\n        readonly time: number;\n        readonly data: Extract<ChunkRow, {\n            readonly type: Kind;\n        }>[\'data\'];\n    };\n}[ChunkRow[\'type\']];',
-  },
-  {
     name: 'ClientConnectionRpc',
     declaration: 'export interface ClientConnectionRpc {\n    call(channel: string, endpoint: string, payload: unknown, signal?: AbortSignal): Promise<ConnectionRpcResult<unknown>>;\n    readonly open?: (channel: string, endpoint: string, payload: unknown, signal: AbortSignal) => AsyncIterable<unknown>;\n}',
   },
@@ -479,11 +532,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ComposedProps',
-    declaration: 'export type ComposedProps<K extends keyof SlotMap & string, EntryKey extends EntryKeyOf<K>, S extends keyof SlotMap & string, H, I extends object, M = never, N = undefined> = PropsRuntime<K, EntryKey> & PropsRenderSlots<S> & PropsStore<H> & InjectFace<I> & MatchedShare<SlotMap[K], M> & PropsLocale<N>;',
-  },
-  {
-    name: 'ConnectionConfig',
-    declaration: 'export interface ConnectionConfig {\n    backoffBaseMs?: number;\n    backoffFactor?: number;\n    backoffMaxMs?: number;\n    generationReadyTimeoutMs?: number;\n}',
+    declaration: 'export type ComposedProps<K extends keyof SlotMap & string, EntryKey extends EntryKeyOf<K>, S extends keyof SlotMap & string, H, I extends object, M = never, N = undefined> = PropsRuntime<K, EntryKey> & PropsRenderSlots<S> & PropsRenderFactories & PropsStore<H> & InjectFace<I> & MatchedShare<SlotMap[K], M> & PropsLocale<N>;',
   },
   {
     name: 'ConnectionGeneration',
@@ -499,7 +548,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ConnectionHandle',
-    declaration: 'export interface ConnectionHandle {\n    readonly isLoopback: boolean;\n    readonly generation: ConnectionGenerationState;\n    readonly state: ConnectionStateSource;\n    readonly rpc: ClientConnectionRpc;\n    reconnect(): void;\n    registerGenerationSource(source: ConnectionGenerationSource): () => void;\n    start(sinks: ConnectionSinks, config?: ConnectionConfig): ConnectionLoop;\n}',
+    declaration: 'export interface ConnectionHandle {\n    readonly isLoopback: boolean;\n    readonly generation: ConnectionGenerationState;\n    readonly state: ConnectionStateSource;\n    readonly rpc: ClientConnectionRpc;\n    reconnect(): void;\n    registerGenerationSource(source: ConnectionGenerationSource): () => void;\n    start(sinks: ConnectionSinks, config?: ConnectionRecoveryConfig): ConnectionLoop;\n}',
   },
   {
     name: 'ConnectionHostInfo',
@@ -508,6 +557,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ConnectionLoop',
     declaration: 'export interface ConnectionLoop {\n    stop(): void;\n}',
+  },
+  {
+    name: 'ConnectionRecoveryConfig',
+    declaration: 'export interface ConnectionRecoveryConfig {\n    backoffBaseMs?: number;\n    backoffFactor?: number;\n    backoffMaxMs?: number;\n    generationReadyWarnMs?: number;\n    generationReadyTimeoutMs?: number;\n}',
   },
   {
     name: 'ConnectionRpcFailure',
@@ -534,6 +587,26 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type EntryKeyOf<K extends keyof SlotMap & string> = SlotMap[K] extends {\n    kind: \'keyed\';\n    keyProps: infer P extends object;\n} ? keyof P & string : string;',
   },
   {
+    name: 'FactoryComponentPropsOf',
+    declaration: 'export type FactoryComponentPropsOf<F extends keyof SlotFactoryMap & string> = FactoryInputPropsOf<F> & FactoryRegistrationPropsOf<F> & ScopeStandardProps<FactoryDefOf<F>[\'scope\']> & {\n    useFactorySlot: UseFactorySlot<F>;\n};',
+  },
+  {
+    name: 'FactoryInjectParams',
+    declaration: 'export type FactoryInjectParams<F extends keyof SlotFactoryMap & string> = FactoryDefOf<F>[\'scope\'] extends \'session\' ? ([\n    FactoryStoreOf<F>\n] extends [\n    StoreDecl\n] ? [\n    sessionId: SessionIdOf,\n    actions: BoundActions<FactoryStoreOf<F>>\n] : [\n    sessionId: SessionIdOf\n]) : FactoryDefOf<F>[\'scope\'] extends \'session-maybe\' ? ([\n    FactoryStoreOf<F>\n] extends [\n    StoreDecl\n] ? [\n    sessionId: SessionIdOf | undefined,\n    actions: BoundActions<FactoryStoreOf<F>> | undefined\n] : [\n    sessionId: SessionIdOf | undefined\n]) : ([\n    FactoryStoreOf<F>\n] extends [\n    StoreDecl\n] ? [\n    actions: BoundActions<FactoryStoreOf<F>>\n] : [\n]);',
+  },
+  {
+    name: 'FactoryLocalComponent',
+    declaration: 'export type FactoryLocalComponent<F extends keyof SlotFactoryMap & string, N extends FactoryLocalNameOf<F>> = SlotComponent<FactoryLocalComponentPropsOf<F, N>>;',
+  },
+  {
+    name: 'FactoryLocalComponentPropsOf',
+    declaration: 'export type FactoryLocalComponentPropsOf<F extends keyof SlotFactoryMap & string, N extends FactoryLocalNameOf<F>> = FactoryLocalInputPropsOf<F, N> & FactoryRegistrationPropsOf<F> & ScopeStandardProps<FactoryLocalDefOf<F, N>[\'scope\']>;',
+  },
+  {
+    name: 'FactoryRegistrationPropsOf',
+    declaration: 'export type FactoryRegistrationPropsOf<F extends keyof SlotFactoryMap & string> = FactoryRenderPropsOf<F> & PropsStore<FactoryStoreOf<F>> & InjectFace<FactoryInjectOf<F>> & PropsLocale<FactoryLocaleOf<F>> & PropsRenderFactories;',
+  },
+  {
     name: 'GlobalStandardProps',
     declaration: 'export interface GlobalStandardProps {\n}',
   },
@@ -551,7 +624,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'InjectFace',
-    declaration: 'export type InjectFace<I extends object> = I extends {\n    hooks: infer HS extends HooksSources;\n} ? Omit<I, \'hooks\'> & PropsHooks<HS> : I;',
+    declaration: 'export type InjectFace<I extends object> = I extends {\n    hooks: infer HS extends HooksSources;\n} ? I extends {\n    keyedHooks: infer KS extends KeyedHooksSources;\n} ? Omit<I, \'hooks\' | \'keyedHooks\'> & PropsHooks<HS> & PropsKeyedHooks<KS> : Omit<I, \'hooks\'> & PropsHooks<HS> : I extends {\n    keyedHooks: infer KS extends KeyedHooksSources;\n} ? Omit<I, \'keyedHooks\'> & PropsKeyedHooks<KS> : I;',
   },
   {
     name: 'InjectParams',
@@ -559,7 +632,19 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ISession',
-    declaration: 'export interface ISession {\n    readonly sessionId: SessionId;\n    readonly projections: ProjectionsFace;\n    beginSubmission(input: BeginSubmissionInput): SubmissionHandle;\n    prompt(content: PromptContentPart[], mode: \'queue\' | \'steer\', signal?: AbortSignal, requestId?: SessionRequestId): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    readAttachment(attachmentId: AttachmentIdType): Promise<RemoteResult<{\n        attachment: ImageAttachmentRef;\n        data: Uint8Array;\n    }>>;\n    updateQueue(itemId: MessageId, action: QueueAction): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    cancel(): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    rename(title: string): Promise<RemoteResult<{\n        title: string;\n        seq: number;\n    }>>;\n    loadOlder(): Promise<void>;\n    command(line: string): Promise<RemoteResult<{\n        matched: boolean;\n    }>>;\n}',
+    declaration: 'export interface ISession {\n    readonly sessionId: SessionId;\n    readonly projections: ProjectionsFace;\n    beginSubmission(input: BeginSubmissionInput): SubmissionHandle;\n    prompt(content: PromptContentPart[], mode: \'queue\' | \'steer\', signal?: AbortSignal, requestId?: SessionRequestId): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    readAttachment(attachmentId: AttachmentIdType): Promise<RemoteResult<{\n        attachment: ImageAttachmentRef;\n        data: Uint8Array;\n    }>>;\n    updateQueue(itemId: MessageId, action: QueueAction): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    cancel(): Promise<RemoteResult<{\n        accepted: true;\n    }>>;\n    rename(title: string): Promise<RemoteResult<{\n        title: string;\n        seq: SessionSeq;\n    }>>;\n    loadOlder(): Promise<void>;\n    loadThrough(seq: SessionSeq): Promise<void>;\n    command(line: string): Promise<RemoteResult<{\n        matched: boolean;\n    }>>;\n}',
+  },
+  {
+    name: 'KeyedHooksSources',
+    declaration: 'export type KeyedHooksSources = Record<string, KeyedStandardSource>;',
+  },
+  {
+    name: 'KeyedSnapshotSelectorHook',
+    declaration: 'export type KeyedSnapshotSelectorHook<Snapshot> = {\n    (key: string): Snapshot | undefined;\n    <Selected>(key: string, selector: (value: Snapshot | undefined) => Selected, equal?: (left: Selected, right: Selected) => boolean): Selected;\n};',
+  },
+  {
+    name: 'KeyedStandardSource',
+    declaration: 'export type KeyedStandardSource = (key: string) => HostObservable<unknown> | undefined;',
   },
   {
     name: 'KeyPropsOf',
@@ -568,6 +653,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'LanguageRegistration',
     declaration: 'export interface LanguageRegistration {\n    id: LocaleId;\n    label: string;\n    fallback: LocaleId;\n}',
+  },
+  {
+    name: 'LiveCompositionNode',
+    declaration: 'export type LiveCompositionNode = LiveSlotNode | LiveFactoryNode;',
+  },
+  {
+    name: 'LiveFactoryNode',
+    declaration: 'export interface LiveFactoryNode {\n    type: \'factory\';\n    name: string;\n    scope: SlotScope;\n    registrant?: string;\n    children: LiveSlotNode[];\n}',
+  },
+  {
+    name: 'LiveSlotNode',
+    declaration: 'export interface LiveSlotNode {\n    type: \'slot\';\n    name: string;\n    kind: SlotKind;\n    scope: SlotScope;\n    declaredBy?: string;\n    occupants: LiveSlotOccupant[];\n    children: LiveSlotNode[];\n}',
+  },
+  {
+    name: 'LiveSlotOccupant',
+    declaration: 'export interface LiveSlotOccupant {\n    registrant?: string;\n    key?: string;\n    id?: string;\n    order?: number;\n    priority: number;\n    active: boolean;\n}',
   },
   {
     name: 'LocaleDefinition',
@@ -598,6 +699,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface LocaleSnapshot {\n    active: LocaleId;\n    locales: readonly LocaleDefinition[];\n    revision: number;\n}',
   },
   {
+    name: 'MainPanelId',
+    declaration: 'export type MainPanelId = Branded<\'MainPanelId\'>;',
+  },
+  {
     name: 'MatchedShare',
     declaration: 'export type MatchedShare<E extends SlotEntryDef, M> = E[\'kind\'] extends \'chain\' ? {\n    matched: M;\n} : object;',
   },
@@ -615,15 +720,31 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PendingSubmission',
-    declaration: 'export interface PendingSubmission {\n    readonly requestId: SessionRequestId;\n    readonly time: number;\n    readonly text: string;\n    readonly images: readonly PendingSubmissionImage[];\n}',
+    declaration: 'export interface PendingSubmission {\n    readonly requestId: SessionRequestId;\n    readonly placement: PendingSubmissionPlacement;\n    readonly time: number;\n    readonly text: string;\n    readonly attachments: readonly PendingSubmissionAttachment[];\n}',
+  },
+  {
+    name: 'PendingSubmissionAttachment',
+    declaration: 'export type PendingSubmissionAttachment = PendingSubmissionImageAttachment | PendingSubmissionFileAttachment;',
+  },
+  {
+    name: 'PendingSubmissionFileAttachment',
+    declaration: 'export interface PendingSubmissionFileAttachment {\n    readonly type: \'file\';\n    readonly value: FileAttachmentRef;\n}',
   },
   {
     name: 'PendingSubmissionImage',
     declaration: 'export interface PendingSubmissionImage {\n    readonly previewUrl: string;\n    readonly name?: string;\n    readonly width?: number;\n    readonly height?: number;\n}',
   },
   {
+    name: 'PendingSubmissionImageAttachment',
+    declaration: 'export interface PendingSubmissionImageAttachment {\n    readonly type: \'image\';\n    readonly value: PendingSubmissionImage;\n}',
+  },
+  {
+    name: 'PendingSubmissionPlacement',
+    declaration: 'export type PendingSubmissionPlacement = \'transcript\' | \'queued\' | \'steering\';',
+  },
+  {
     name: 'PendingSubmissionRetirement',
-    declaration: 'export type PendingSubmissionRetirement = {\n    readonly reason: \'observed\';\n    readonly attachments: readonly ImageAttachmentRef[];\n} | {\n    readonly reason: \'failed\';\n};',
+    declaration: 'export type PendingSubmissionRetirement = {\n    readonly reason: \'observed\';\n    readonly attachments: readonly (ImageAttachmentRef | FileAttachmentRef)[];\n} | {\n    readonly reason: \'failed\';\n};',
   },
   {
     name: 'ProjectionsFace',
@@ -631,7 +752,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PromptContentPart',
-    declaration: 'export type PromptContentPart = {\n    readonly type: \'text\';\n    readonly text: string;\n} | {\n    readonly type: \'image\';\n    readonly mediaType: ImageMediaType;\n    readonly data: string;\n    readonly name?: string;\n};',
+    declaration: 'export type PromptContentPart = {\n    readonly type: \'text\';\n    readonly text: string;\n} | {\n    readonly type: \'image\';\n    readonly mediaType: ImageMediaType;\n    readonly data: string;\n    readonly name?: string;\n} | {\n    readonly type: \'file\';\n    readonly receiptId: Branded<\'file-upload-receipt-id\'>;\n};',
   },
   {
     name: 'PromptError',
@@ -642,16 +763,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type PropsHooks<HS extends HooksSources> = {\n    [N in keyof HS & string as `use${Capitalize<N>}`]: SnapshotSelectorHook<HS[N] extends HostObservable<infer T> ? T : never>;\n};',
   },
   {
+    name: 'PropsKeyedHooks',
+    declaration: 'export type PropsKeyedHooks<HS extends KeyedHooksSources> = {\n    [N in keyof HS & string as `use${Capitalize<N>}`]: KeyedSnapshotSelectorHook<HS[N] extends (key: string) => HostObservable<infer T> | undefined ? T : never>;\n};',
+  },
+  {
     name: 'PropsLocale',
     declaration: 'export type PropsLocale<N> = N extends keyof LocaleNamespaceMap & string ? {\n    t: TranslateNS<N>;\n} : object;',
   },
   {
+    name: 'PropsRenderFactories',
+    declaration: 'export interface PropsRenderFactories {\n    renderFactorySlot: RenderFactorySlot;\n}',
+  },
+  {
     name: 'PropsRenderSlots',
-    declaration: 'export type PropsRenderSlots<S extends keyof SlotMap & string> = {\n    renderSlot: RenderSlotFn<Exclude<S, ChainKeysOf<S>>>;\n    readonly __renders?: ((key: S) => void) | undefined;\n} & ([\n    ChainKeysOf<S>\n] extends [\n    never\n] ? object : {\n    renderSlotChain: <K extends ChainKeysOf<S>>(key: K, owner: OwnerOf<K>, opts?: ChainRenderOpts) => ReactNode;\n}) & (\'session\' extends ScopeOf<S> ? {\n    SessionProvider: SessionProviderComponent;\n} : object);',
+    declaration: 'export type PropsRenderSlots<S extends keyof SlotMap & string> = {\n    renderSlot: RenderSlotFn<Exclude<S, ChainKeysOf<S>>>;\n    readonly __renders?: ((key: S) => void) | undefined;\n} & ([\n    ChainKeysOf<S>\n] extends [\n    never\n] ? object : {\n    renderSlotChain: <K extends ChainKeysOf<S>>(key: K, owner: OwnerOf<K>, opts?: ChainRenderOpts) => ReactNode;\n}) & ([\n    Extract<ScopeOf<S>, \'session\' | \'session-maybe\'>\n] extends [\n    never\n] ? object : {\n    SessionProvider: SessionProviderComponent;\n});',
   },
   {
     name: 'PropsRuntime',
-    declaration: 'export type PropsRuntime<K extends keyof SlotMap & string, EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>> = OwnerOf<K> & KeyPropsOf<K, EntryKey> & SlotInjectFace<SlotInjectOf<K>> & (ScopeOf<K> extends \'session\' ? SessionStandardProps : ScopeOf<K> extends \'session-maybe\' ? SessionMaybeStandardProps : object) & GlobalStandardProps;',
+    declaration: 'export type PropsRuntime<K extends keyof SlotMap & string, EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>> = OwnerOf<K> & KeyPropsOf<K, EntryKey> & SlotInjectFace<SlotInjectOf<K>> & ScopeStandardProps<ScopeOf<K>>;',
   },
   {
     name: 'PropsSlotHooks',
@@ -660,6 +789,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PropsStore',
     declaration: 'export type PropsStore<H> = H extends StoreHandle<infer T, infer A> ? {\n    useStore: SnapshotSelectorHook<T>;\n    actions: BakedActions<T, A>;\n} : object;',
+  },
+  {
+    name: 'QueueAction',
+    declaration: 'export type QueueAction = {\n    readonly kind: \'edit\';\n    readonly content: readonly ContentBlock[];\n} | {\n    readonly kind: \'remove\';\n} | {\n    readonly kind: \'steer\';\n};',
+  },
+  {
+    name: 'RegisterFactory',
+    declaration: 'export interface RegisterFactory {\n    <F extends keyof SlotFactoryMap & string>(options: RegisterFactoryOptions<F>, component: SlotComponent<FactoryComponentPropsOf<F>>): () => void;\n}',
+  },
+  {
+    name: 'RegisterFactoryOptions',
+    declaration: 'export type RegisterFactoryOptions<F extends keyof SlotFactoryMap & string> = {\n    name: F;\n    scope: FactoryDefOf<F>[\'scope\'];\n} & FactoryField<F, \'children\', FactoryChildrenOf<F>> & FactoryField<F, \'store\', FactoryStoreOf<F> | (() => FactoryStoreOf<F>)> & FactoryField<F, \'inject\', (...args: FactoryInjectParams<F>) => FactoryInjectOf<F>> & FactoryField<F, \'locale\', FactoryLocaleOf<F>> & FactoryField<F, \'slots\', RuntimeFactorySlots<F>> & FactoryCollisionCheck<F> & FactoryChildrenCheck<F>;',
   },
   {
     name: 'RemoteHostFacts',
@@ -682,12 +823,24 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface RemoteStreamOptions<Item> {\n    readonly name: string;\n    readonly open: (signal: AbortSignal) => AsyncIterable<Item>;\n    readonly ended: (accepted: boolean) => Error;\n    readonly carrierFailed?: (error: RemoteStreamCarrierError) => void;\n}',
   },
   {
+    name: 'RenderFactorySlot',
+    declaration: 'export type RenderFactorySlot = <F extends keyof SlotFactoryMap & string>(name: F, props: FactoryInputPropsOf<F>, options?: {\n    slots?: Partial<{\n        [N in FactoryLocalNameOf<F>]: FactoryLocalComponent<F, N>;\n    }>;\n    fallback?: ReactNode;\n}) => ReactNode;',
+  },
+  {
     name: 'ScopeOf',
     declaration: 'export type ScopeOf<K extends keyof SlotMap & string> = SlotMap[K][\'scope\'];',
   },
   {
+    name: 'ScopeStandardProps',
+    declaration: 'export type ScopeStandardProps<S extends SlotScope> = (S extends \'session\' ? SessionStandardProps : S extends \'session-maybe\' ? SessionMaybeStandardProps : object) & GlobalStandardProps;',
+  },
+  {
     name: 'SessionAreaProps',
-    declaration: 'export interface SessionAreaProps {\n    empty?: (() => ReactNode) | undefined;\n    children: ReactNode;\n}',
+    declaration: 'export interface SessionAreaProps {\n    readonly session?: SlotScopeTargetMap[keyof SlotScopeTargetMap & \'session\'] | undefined;\n    empty?: (() => ReactNode) | undefined;\n    children: ReactNode;\n}',
+  },
+  {
+    name: 'SessionAssistantSettlementEntry',
+    declaration: 'export interface SessionAssistantSettlementEntry {\n    readonly type: \'event\';\n    readonly event: SessionEvent<\'assistant/message\'> | SessionEvent<\'assistant/attempt\'>;\n}',
   },
   {
     name: 'SessionBinding',
@@ -695,11 +848,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionEventChange',
-    declaration: 'export type SessionEventChange = {\n    readonly kind: \'replace\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'prepend\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'append\';\n    readonly entries: readonly SessionLiveEventEntry[];\n};',
+    declaration: 'export type SessionEventChange = {\n    readonly kind: \'replace\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'prepend\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'append\';\n    readonly entries: readonly SessionEventLikeEntry[];\n} | {\n    readonly kind: \'settle-assistant\';\n    readonly attemptId: LlmAttemptId;\n    readonly entry?: SessionAssistantSettlementEntry;\n};',
   },
   {
     name: 'SessionEventLikeEntry',
-    declaration: 'export type SessionEventLikeEntry = {\n    readonly type: \'event\';\n    readonly event: SessionEvent;\n} | {\n    readonly type: \'chunks\';\n    readonly event: ChunkRowEvent;\n};',
+    declaration: 'export type SessionEventLikeEntry = {\n    readonly type: \'event\';\n    readonly event: SessionEvent;\n} | {\n    readonly type: \'transient\';\n    readonly event: AssistantLiveChunkEvent;\n};',
   },
   {
     name: 'SessionEventSource',
@@ -718,10 +871,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionIdOf = SessionStandardProps extends {\n    sessionId: infer S;\n} ? S : string;',
   },
   {
-    name: 'SessionLiveEventEntry',
-    declaration: 'export type SessionLiveEventEntry = Extract<SessionEventLikeEntry, {\n    readonly type: \'event\';\n}>;',
-  },
-  {
     name: 'SessionMaybeStandardProps',
     declaration: 'export interface SessionMaybeStandardProps {\n}',
   },
@@ -730,8 +879,28 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionProviderComponent = (props: SessionAreaProps) => ReactNode;',
   },
   {
+    name: 'SessionReference',
+    declaration: 'export interface SessionReference extends Disposable {\n    readonly sessionId: SessionId;\n    readonly binding: SessionBinding;\n    readonly ready: Promise<SessionBinding>;\n    release(): void;\n}',
+  },
+  {
+    name: 'SessionReferenceSource',
+    declaration: 'export type SessionReferenceSource = Extract<keyof SessionReferenceSourceMap, string>;',
+  },
+  {
+    name: 'SessionReferenceSourceMap',
+    declaration: 'export interface SessionReferenceSourceMap {\n    controllerOperation: unknown;\n    gateway: unknown;\n}',
+  },
+  {
     name: 'SessionRequestId',
     declaration: 'export type SessionRequestId = Branded<\'session-request-id\'>;',
+  },
+  {
+    name: 'SessionRetainInfo',
+    declaration: 'export interface SessionRetainInfo {\n    readonly referenceCount: number;\n    readonly retainedBy: Readonly<Partial<Record<SessionReferenceSource, number>>>;\n}',
+  },
+  {
+    name: 'SessionRetainOptions',
+    declaration: 'export interface SessionRetainOptions {\n    readonly source: SessionReferenceSource;\n    readonly signal?: AbortSignal | undefined;\n}',
   },
   {
     name: 'SessionSearchResultItem',
@@ -739,11 +908,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionSnapshot',
-    declaration: 'export interface SessionSnapshot {\n    readonly sessionId: SessionId;\n    readonly queue: readonly QueuedMessage[];\n    readonly pendingSubmissions: readonly PendingSubmission[];\n    readonly running: boolean;\n    readonly subagent: {\n        readonly address: SubagentAddress;\n        readonly parentAvailable?: boolean;\n    } | null;\n    readonly removed: boolean;\n    readonly openState: OpenState;\n    readonly openError: RemoteFailure | null;\n    readonly hasMore: boolean;\n    readonly loadingOlder: boolean;\n    readonly promptError: PromptError | null;\n    readonly blank: boolean;\n    readonly lastAgentError: string | null;\n    readonly promptAttempted: boolean;\n    readonly awaitingFirstTurn: boolean;\n}',
+    declaration: 'export interface SessionSnapshot {\n    readonly sessionId: SessionId;\n    readonly pendingSubmissions: readonly PendingSubmission[];\n    readonly running: boolean;\n    readonly subagent: {\n        readonly address: SubagentAddress;\n        readonly parentAvailable?: boolean;\n    } | null;\n    readonly removed: boolean;\n    readonly openState: OpenState;\n    readonly openError: RemoteFailure | null;\n    readonly hasMore: boolean;\n    readonly loadingOlder: boolean;\n    readonly promptError: PromptError | null;\n    readonly blank: boolean;\n    readonly lastAgentError: string | null;\n    readonly promptAttempted: boolean;\n    readonly awaitingFirstTurn: boolean;\n}',
   },
   {
     name: 'SessionStandardProps',
     declaration: 'export interface SessionStandardProps {\n}',
+  },
+  {
+    name: 'SessionTarget',
+    declaration: 'export type SessionTarget = SessionId | SubagentAddress;',
   },
   {
     name: 'SlotComponent',
@@ -751,11 +924,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SlotCore',
-    declaration: 'export class SlotCore {\n    constructor();\n    register<K extends keyof SlotMap & string, const EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>, const D extends ChildrenDecl = Record<never, never>, H extends StoreDecl | undefined = undefined, M = never, N extends (keyof LocaleNamespaceMap & string) | undefined = undefined, C extends SlotComponent<never> = SlotComponent<never>>(options: BaseOptions<K, EntryKey, D, H, M, N> & {\n        inject?: undefined;\n    }, component: C & SlotComponent<ComposedProps<K, NoInfer<EntryKey>, keyof NoInfer<D> & keyof SlotMap & string, HandleOf<NoInfer<H>>, object, NoInfer<M>, NoInfer<N>>> & RendersCheck<C, D>): () => void;\n    register<K extends keyof SlotMap & string, I extends object, const EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>, const D extends ChildrenDecl = Record<never, never>, H extends StoreDecl | undefined = undefined, M = never, N extends (keyof LocaleNamespaceMap & string) | undefined = undefined, C extends SlotComponent<never> = SlotComponent<never>>(options: BaseOptions<K, EntryKey, D, H, M, N> & {\n        inject: (...args: InjectParams<K, H>) => I;\n    }, component: C & SlotComponent<ComposedProps<K, NoInfer<EntryKey>, keyof NoInfer<D> & keyof SlotMap & string, HandleOf<NoInfer<H>>, I, NoInfer<M>, NoInfer<N>>> & RendersCheck<C, D>): () => void;\n    register(options: ErasedOptions, component: unknown): () => void;\n    isLive(entry: StoredEntry): boolean;\n    entries(key: string): readonly StoredEntry[];\n    entriesOfSlot(key /* …truncated — full shape in source */',
+    declaration: 'export class SlotCore {\n    constructor();\n    readonly registerFactory: RegisterFactory;\n    factory(name: string): StoredFactory | undefined;\n    factoryVersion(name: string): number;\n    subscribeFactory(name: string, listener: () => void): () => void;\n    isFactoryLive(definition: StoredFactory): boolean;\n    register<K extends keyof SlotMap & string, const EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>, const D extends ChildrenDecl = Record<never, never>, H extends StoreDecl | undefined = undefined, M = never, N extends (keyof LocaleNamespaceMap & string) | undefined = undefined, C extends SlotComponent<never> = SlotComponent<never>>(options: BaseOptions<K, EntryKey, D, H, M, N> & {\n        inject?: undefined;\n    }, component: C & SlotComponent<ComposedProps<K, NoInfer<EntryKey>, keyof NoInfer<D> & keyof SlotMap & string, HandleOf<NoInfer<H>>, object, NoInfer<M>, NoInfer<N>>> & RendersCheck<C, D>): () => void;\n    register<K extends keyof SlotMap & string, I extends object, const EntryKey extends EntryKeyOf<K> = EntryKeyOf<K>, const D extends ChildrenDecl = Record<never, never>, H extends StoreDecl | undefined = undefined, M = never, N extends (keyof LocaleNamespaceMap & string) | undefined = undefined, C extends SlotComponent<never> = SlotComponent<never>>(options: BaseOptions<K, EntryKey, D, H, M, N> & {\n        inject: (...args: InjectParams<K, H>) => I;\n    }, component: C & SlotComponent<ComposedProps<K, NoInfer<EntryKey>, keyof NoInfer<D> & keyof SlotMap & string, HandleOf<NoInfer<H>>, I, NoInfer<M>, NoInfer<N>>> & RendersCheck<C, D>): () => void;\n    register(options: ErasedOptions, component: unknown): () => void;\n    isLive(entry: StoredEntry): boolean;\n    entries(key: string): readonly StoredEntry[];\n    entriesOfSlot(key: string): readonly StoredEntry[];\n    spec<K extends keyof SlotMap & string>(key: K): SlotSpec<SlotMap[K]> | undefined;\n    specDynamic(key: string): SlotSpec<SlotEntryDef> | undefined;\n    snapshot(root?: string): LiveCompositionNode[];\n    declarationEpoch(key: string): number;\n    subscribe(key: string, fn: () => void): () => void;\n    subscribeDeclaration(key: string, fn: () => void): () => void;\n    getVersion(key: string): number;\n    onMutate(fn: (key: string) => void): () => void;\n    reportEntryError(key: string, entry: StoredEntry, error: unknown, info: {\n        abdicate: boolean;\n    }): void;\n    reportFactoryError(name: string, registration: StoredEntry | StoredFactory, error: unknown): void;\n    onEntryError(fn: (key: string, registration: StoredEntry | StoredFactory, error: unknown, info: {\n        abdicated: boolean;\n    }) => void): () => void;\n}',
   },
   {
     name: 'SlotEntryDef',
     declaration: 'export interface SlotEntryDef {\n    kind: SlotKind;\n    scope: SlotScope;\n    owner?: object;\n    keyProps?: Record<string, object>;\n    hookContext?: unknown;\n    inject?: object;\n}',
+  },
+  {
+    name: 'SlotFactoryMap',
+    declaration: 'export interface SlotFactoryMap {\n}',
   },
   {
     name: 'SlotInjectFace',
@@ -782,6 +959,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SlotScope = \'root\' | \'session-maybe\' | \'session\';',
   },
   {
+    name: 'SlotScopeTargetMap',
+    declaration: 'export interface SlotScopeTargetMap {\n}',
+  },
+  {
     name: 'SlotSpec',
     declaration: 'export type SlotSpec<E extends SlotEntryDef> = {\n    kind: E[\'kind\'];\n    scope: E[\'scope\'];\n} & (\'inject\' extends keyof E ? E extends {\n    inject: infer Injected extends object;\n} ? {\n    inject: Injected;\n} : {\n    inject?: object;\n} : {\n    inject?: never;\n});',
   },
@@ -796,6 +977,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'StoredEntry',
     declaration: 'export interface StoredEntry {\n    component: unknown;\n    options: {\n        key?: string;\n        id?: string;\n        order?: number;\n        label?: SlotLabel;\n        priority?: number;\n    };\n    select?: ((owner: never) => unknown) | undefined;\n    inject?: ((...args: never[]) => Record<string, unknown>) | undefined;\n    children?: Readonly<Record<string, SlotSpec<SlotEntryDef>>> | undefined;\n    store?: StoreDecl | undefined;\n    locale?: string | undefined;\n    registrant?: string | undefined;\n}',
+  },
+  {
+    name: 'StoredFactory',
+    declaration: 'export interface StoredFactory {\n    readonly name: string;\n    readonly component: unknown;\n    readonly scope: SlotScope;\n    readonly children?: Readonly<Record<string, SlotSpec<SlotEntryDef>>> | undefined;\n    readonly store?: StoreDecl | undefined;\n    readonly inject?: ((...args: never[]) => Record<string, unknown>) | undefined;\n    readonly locale?: string | undefined;\n    readonly slots?: Readonly<Record<string, {\n        scope: SlotScope;\n    }>> | undefined;\n    readonly registrant?: string | undefined;\n}',
   },
   {
     name: 'StoreFactory',
@@ -842,12 +1027,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type ThemeTokens = Record<string, string>;',
   },
   {
-    name: 'Translate',
-    declaration: 'export type Translate<K extends string = string> = (key: K, params?: Record<string, unknown>) => string;',
-  },
-  {
     name: 'TranslateNS',
     declaration: 'export type TranslateNS<N extends keyof LocaleNamespaceMap & string> = Translate<LocaleKeysOf<N>>;',
+  },
+  {
+    name: 'UseFactorySlot',
+    declaration: 'export type UseFactorySlot<F extends keyof SlotFactoryMap & string> = <N extends FactoryLocalNameOf<F>>(name: N, fallback: FactoryLocalComponent<F, N>) => SlotComponent<FactoryLocalInputPropsOf<F, N>>;',
   },
   {
     name: 'WorkspaceView',
@@ -866,7 +1051,6 @@ export const INHERITED_CTX_API: readonly InheritedApiEntry[] = [
   { name: 'ctx.root / ctx.fiber / ctx.registry / ctx.reflect / ctx.events / ctx.logger', summary: 'Ambient handles onto the running context graph.' },
   { name: 'ctx.timer (+ interval / timeout / throttle / debounce)', summary: 'Disposable timer helpers. The `timer` key is provided at runtime; the four supported helpers are mixed onto ctx directly (declared via Pick).' },
   { name: 'ctx.loader', summary: 'The config Loader that booted the app (present under the loader).' },
-  { name: 'ctx.hmr', summary: 'The hot-module-reload watcher (present under the hmr plugin).' },
 ]
 
 function referencedTypeClosure(seeds: readonly string[]): TypeApiEntry[] {

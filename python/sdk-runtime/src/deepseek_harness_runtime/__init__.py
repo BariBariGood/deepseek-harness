@@ -21,9 +21,11 @@ console command requires ``DSH_HOME`` for the same reason.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -56,7 +58,7 @@ def bundled_runtime_path() -> Path:
     """Absolute path of the bundled single-file runtime executable for the current platform.
 
     Raises FileNotFoundError when the platform is unsupported, the executable
-    has not been placed into this package, the required ripgrep sidecar is
+    has not been placed into this package, the ripgrep or Office sidecar is
     missing, or the required macOS spawn helper is missing; the message names
     the acquisition routes (acquisition strategy is deliberately separate from
     this lookup interface, so an on-demand download can replace it without
@@ -87,6 +89,21 @@ def bundled_runtime_path() -> Path:
                 f"deepseek-harness-runtime-bin is missing the node-pty spawn helper at {helper}. "
                 + _EXE_ACQUISITION_HINT
             )
+    office = path.with_name(f"{path.name.removesuffix('.exe')}-office")
+    adapter = office / "node_modules/@deepseek-ai/libreoffice-kit/package.json"
+    if not adapter.is_file():
+        raise FileNotFoundError(
+            f"deepseek-harness-runtime-bin is missing the Office sidecar at {office}. "
+            + _EXE_ACQUISITION_HINT
+        )
+    native = tag.replace("win-", "win32-").replace("macos-", "darwin-")
+    declared = json.loads(adapter.read_text(encoding="utf-8")).get("optionalDependencies", {})
+    engine = native if f"@deepseek-ai/libreoffice-kit-{native}" in declared else "wasm"
+    if not (office / "node_modules" / f"@deepseek-ai/libreoffice-kit-{engine}/prebuilds.json").is_file():
+        raise FileNotFoundError(
+            f"deepseek-harness-runtime-bin is missing the Office sidecar engine {engine} at {office}. "
+            + _EXE_ACQUISITION_HINT
+        )
     return path
 
 
@@ -120,12 +137,11 @@ def _current_platform_tag() -> str:
         plat is None
         or arch is None
         or (plat == "win" and arch != "x64")
-        or (plat == "macos" and arch != "arm64")
     ):
         raise FileNotFoundError(
             "no bundled DeepSeek Harness SDK runtime exists for this platform "
             f"(sys.platform={sys.platform!r}, machine={platform.machine()!r}); supported: "
-            "Linux x64/arm64, macOS arm64, and Windows x64. " + _EXE_ACQUISITION_HINT
+            "Linux x64/arm64, macOS x64/arm64, and Windows x64. " + _EXE_ACQUISITION_HINT
         )
     return f"{plat}-{arch}"
 
@@ -157,7 +173,7 @@ def _node_launch_args() -> tuple[str, str]:
 
 
 def main() -> None:
-    """Execute the bundled dsh CLI with an explicitly selected Harness home."""
+    """Launch the CLI with explicit DSH_HOME; wait on Windows, replace the process on POSIX."""
     if not os.environ.get("DSH_HOME", "").strip():
         print(
             "dsh: the Python runtime command requires an explicit DSH_HOME; "
@@ -166,6 +182,9 @@ def main() -> None:
         )
         raise SystemExit(2)
     argv = (*resolve_bundled_launch_args(), *sys.argv[1:])
+    if sys.platform == "win32":
+        # Windows CRT exec does not replace the process; wait and preserve the runtime status.
+        raise SystemExit(subprocess.run(argv, env=os.environ).returncode)
     os.execvpe(argv[0], argv, os.environ)
 
 

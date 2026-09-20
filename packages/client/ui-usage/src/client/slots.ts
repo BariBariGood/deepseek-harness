@@ -9,5 +9,5 @@ export interface UsageFace {
    * @returns The assembled snapshot with one report per provider.
    * @throws When the wire call fails, with the endpoint's error message.
    */
-  refresh(): Promise<UsageSnapshot>
+  refresh: () => Promise<UsageSnapshot>
 }

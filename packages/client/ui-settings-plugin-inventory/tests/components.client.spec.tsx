@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { ClientEntryState } from '@deepseek-ai/dsh-client-modules/client'
+import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PluginInventorySettingsTab } from '../src/client/PluginInventorySettingsTab.tsx'
@@ -25,6 +28,8 @@ function props(
     t,
     list,
     presetName,
+    useClientSync: bindSnapshotSelector(createSnapshotStore<ClientEntryState>({ syncing: false, failures: [] })),
+    retryClient: vi.fn(),
   } as PluginInventorySettingsTabProps
 }
 
@@ -82,9 +87,10 @@ async function renderReady(snapshot: Snapshot = SNAPSHOT): Promise<ReturnType<ty
 
 const globalToggle = (): HTMLElement =>
   screen.getByRole('button', { name: (name: string) => name.startsWith(en.globalTitle) })
+const presetToggle = (): HTMLElement => screen.getByRole('button', { name: en.presetTitle })
 
 describe('PluginInventorySettingsTab', () => {
-  it('shows the default preset first and keeps the global plane collapsed', async () => {
+  it('shows the default preset first with both groups collapsed', async () => {
     const view = await renderReady()
 
     const switcher = screen.getByRole('button', { name: en.switcherLabel })
@@ -100,31 +106,36 @@ describe('PluginInventorySettingsTab', () => {
     expect(screen.getByText(en.presetSubtitle)).toBeTruthy()
     expect(view.container.querySelector('[data-preset-plugin-count]')?.getAttribute('data-preset-plugin-count')).toBe('6')
 
-    // Only the preset group lists rows while the global plane stays collapsed.
+    // Both groups start collapsed; opening the preset group lists its rows while the global plane stays folded.
+    expect(presetToggle().getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+    fireEvent.click(presetToggle())
+    expect(presetToggle().getAttribute('aria-expanded')).toBe('true')
     expect(screen.getAllByRole('listitem')).toHaveLength(6)
     expect(screen.getAllByText(en.enabledTag)).toHaveLength(3)
     expect(screen.getByText(en.conditionalTag)).toBeTruthy()
     expect(screen.getByText(en.disabledTag)).toBeTruthy()
     expect(screen.getByText(en.failedTag)).toBeTruthy()
-    expect(screen.getByRole('img', { name: 'Running' })).toBeTruthy()
-    // No live fiber, no dot: file-state rows carry only their enablement tag.
-    expect(screen.queryByRole('img', { name: 'Not running' })).toBeNull()
+    // The enablement tag is the row's one settled status signal: an active fiber
+    // and a row with no live fiber both render without a phase dot.
+    expect(screen.queryByRole('img', { name: en.active })).toBeNull()
+    expect(screen.queryByRole('img', { name: en.unobserved })).toBeNull()
 
     expect(globalToggle().getAttribute('aria-expanded')).toBe('false')
     expect(view.container.querySelector('[data-plugin-count]')?.getAttribute('data-plugin-count')).toBe('7')
     expect(screen.getByText(`1 ${en.failedCountLabel}`)).toBeTruthy()
 
-    // A preset row expands into its provenance facts.
-    fireEvent.click(screen.getByRole('button', { name: 'pwsh, Conditional' }))
+    // A preset row expands into its source facts.
+    fireEvent.click(screen.getByRole('button', { name: 'pwsh, pwsh, Conditional' }))
     expect(screen.getByText(en.fromPreset)).toBeTruthy()
     expect(screen.getByText('标准模式')).toBeTruthy()
     expect(screen.getByText(en.condition)).toBeTruthy()
     expect(screen.getByText('process.platform === \'win32\'')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'pwsh, Conditional' }))
+    fireEvent.click(screen.getByRole('button', { name: 'pwsh, pwsh, Conditional' }))
     expect(screen.queryByText(en.condition)).toBeNull()
 
     // A failed preset row names its runtime state instead of a condition.
-    fireEvent.click(screen.getByRole('button', { name: 'crashy, Failed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'crashy, crashy, Failed' }))
     expect(screen.getByText(en.runtime)).toBeTruthy()
     expect(screen.getByText('Failed to start')).toBeTruthy()
 
@@ -132,6 +143,69 @@ describe('PluginInventorySettingsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'anonymous, Enabled' }))
     expect(view.container.querySelector('[data-loader-entry]')).toBeNull()
     expect(screen.getByText(en.moduleLabel).nextElementSibling?.textContent).toBe('@fixture/anonymous')
+  })
+
+  it('keeps the phase dot for a live phase the enablement tag does not state', async () => {
+    await renderReady({
+      entries: [
+        { entryId: 'booting', moduleName: '@fixture/booting', enabled: true, fiberPhase: 'loading' },
+        { entryId: 'waiting', moduleName: '@fixture/waiting', enabled: true, fiberPhase: 'pending' },
+        { entryId: 'running', moduleName: '@fixture/running', enabled: true, fiberPhase: 'active' },
+        { entryId: 'unobserved', moduleName: '@fixture/unobserved', enabled: true, fiberPhase: null },
+      ],
+      agentPresets: [{
+        id: 'standard',
+        trust: 'system',
+        isDefault: true,
+        rows: [
+          { entryId: 'stopping', moduleName: '@fixture/stopping', enabled: true, fiberPhase: 'unloading' },
+          { entryId: 'preset-running', moduleName: '@fixture/preset-running', enabled: true, fiberPhase: 'active' },
+        ],
+      }],
+    } as unknown as Snapshot)
+
+    fireEvent.click(globalToggle())
+    fireEvent.click(presetToggle())
+    expect(screen.getAllByText(en.enabledTag)).toHaveLength(6)
+    expect(screen.getByRole('img', { name: en.loadingPhase })).toBeTruthy()
+    expect(screen.getByRole('img', { name: en.pending })).toBeTruthy()
+    expect(screen.getByRole('img', { name: en.unloading })).toBeTruthy()
+    expect(screen.queryByRole('img', { name: en.active })).toBeNull()
+    expect(screen.queryByRole('img', { name: en.unobserved })).toBeNull()
+  })
+
+  it('distinguishes collapsed same-module rows by stable entry id', async () => {
+    const longId = 'include:agent-presets:tool-subagent-secondary-with-a-complete-stable-identity'
+    const subtitle = 'agent-presets:tool-subagent-secondary-with-a-complete-stable-identity'
+    await renderReady({
+      entries: [],
+      agentPresets: [{
+        id: 'same-module',
+        trust: 'user',
+        isDefault: true,
+        rows: [
+          { entryId: 'tool-subagent-primary', moduleName: '@deepseek-ai/dsh-tool-subagent', enabled: true, fiberPhase: null },
+          { entryId: longId, moduleName: '@deepseek-ai/dsh-tool-subagent', enabled: false, fiberPhase: null },
+        ],
+      }],
+    })
+
+    fireEvent.click(presetToggle())
+    expect(screen.getByRole('button', { name: 'tool-subagent, tool-subagent-primary, Enabled' })
+      .getAttribute('aria-expanded')).toBe('false')
+    const secondary = screen.getByRole('button', { name: `tool-subagent, ${longId}, Disabled` })
+    expect(secondary.getAttribute('aria-expanded')).toBe('false')
+    expect(secondary.children).toHaveLength(2)
+    expect(secondary.children[0]?.textContent).toContain('tool-subagent')
+    expect(secondary.children[0]?.textContent).toContain('Disabled')
+    expect(secondary.children[1]?.textContent).toBe(subtitle)
+    expect(screen.getByTitle(longId).textContent).toBe(subtitle)
+
+    fireEvent.change(screen.getByRole('searchbox', { name: en.search }), { target: { value: 'include:agent-presets:tool-subagent-secondary' } })
+    expect(screen.queryByRole('button', { name: 'tool-subagent, tool-subagent-primary, Enabled' })).toBeNull()
+    const filteredSecondary = screen.getByRole('button', { name: `tool-subagent, ${longId}, Disabled` })
+    fireEvent.click(filteredSecondary)
+    expect(filteredSecondary.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('expands the global plane with failures first and preset-provided rows inline', async () => {
@@ -148,21 +222,21 @@ describe('PluginInventorySettingsTab', () => {
     // Rows the presets took over sit inline, marked instead of plainly disabled.
     expect(screen.getAllByText(en.presetEnabledTag)).toHaveLength(2)
 
-    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, Enabled via presets' }))
+    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, bash-host, Enabled via presets' }))
     expect(screen.getByText(en.presetProvidedDetail)).toBeTruthy()
     expect(screen.getByText(en.enabledIn)).toBeTruthy()
     expect(screen.getByText('标准模式 · ptc')).toBeTruthy()
 
     // The failed global card reports its runtime state.
-    fireEvent.click(screen.getByRole('button', { name: 'telemetry, Failed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'telemetry, telemetry, Failed' }))
     expect(screen.getByText('Failed to start')).toBeTruthy()
 
     // An enabled entry with no live fiber says so in its details, dot-free.
-    fireEvent.click(screen.getByRole('button', { name: 'unobserved-name, Enabled' }))
+    fireEvent.click(screen.getByRole('button', { name: 'unobserved-name, unobserved, Enabled' }))
     expect(screen.getByText('Not running')).toBeTruthy()
 
     // A disabled row outside every preset stays plainly disabled.
-    fireEvent.click(screen.getByRole('button', { name: 'dormant, Disabled' }))
+    fireEvent.click(screen.getByRole('button', { name: 'dormant, dormant, Disabled' }))
     expect(screen.queryByText(en.presetProvidedDetail)).toBeNull()
 
     fireEvent.click(globalToggle())
@@ -179,8 +253,9 @@ describe('PluginInventorySettingsTab', () => {
 
     pickPreset('ptc')
     expect(view.container.querySelector('[data-preset-plugin-count]')?.getAttribute('data-preset-plugin-count')).toBe('3')
-    fireEvent.click(screen.getAllByRole('button', { name: 'tool-bash, Enabled' })[0]!)
-    // An unnamed preset labels provenance by its id.
+    fireEvent.click(presetToggle())
+    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, bash, Enabled' }))
+    // An unnamed preset labels its source by id.
     expect(screen.getByText(en.fromPreset).nextElementSibling?.textContent).toBe('ptc')
 
     pickPreset('坏预设 (failed to load)')
@@ -188,16 +263,18 @@ describe('PluginInventorySettingsTab', () => {
     expect(view.container.querySelector('[data-preset-plugin-count]')?.getAttribute('data-preset-plugin-count')).toBe('0')
   })
 
-  it('collapses the preset group until a search forces it open', async () => {
+  it('keeps the preset group folded until opened or searched', async () => {
     const view = await renderReady()
-    const toggle = screen.getByRole('button', { name: en.presetTitle })
+    const toggle = presetToggle()
 
+    // The header keeps its count while the rows are folded away.
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(view.container.querySelector('[data-preset-plugin-count]')?.getAttribute('data-preset-plugin-count')).toBe('6')
+    expect(view.container.querySelectorAll('[data-plugin-scope="preset"] li')).toHaveLength(0)
+    fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    // The header keeps its count while the rows are folded away.
-    expect(view.container.querySelector('[data-preset-plugin-count]')?.getAttribute('data-preset-plugin-count')).toBe('6')
-    expect(view.container.querySelectorAll('[data-plugin-scope="preset"] li')).toHaveLength(0)
 
     fireEvent.change(screen.getByRole('searchbox', { name: en.search }), { target: { value: 'pwsh' } })
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
@@ -227,11 +304,12 @@ describe('PluginInventorySettingsTab', () => {
     ])
     fireEvent.keyDown(document, { key: 'Escape' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'pwsh, Conditional' }))
+    fireEvent.click(presetToggle())
+    fireEvent.click(screen.getByRole('button', { name: 'pwsh, pwsh, Conditional' }))
     expect(screen.getByText(en.fromPreset).nextElementSibling?.textContent).toBe('Localized standard')
 
     fireEvent.click(globalToggle())
-    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, Enabled via presets' }))
+    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, bash-host, Enabled via presets' }))
     expect(screen.getByText('Localized standard · Localized ptc')).toBeTruthy()
   })
 
@@ -241,7 +319,7 @@ describe('PluginInventorySettingsTab', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'ptc' }))
 
     fireEvent.click(globalToggle())
-    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, Enabled via presets' }))
+    fireEvent.click(screen.getByRole('button', { name: 'tool-bash, bash-host, Enabled via presets' }))
     fireEvent.click(screen.getByRole('button', { name: en.viewInPreset }))
     expect(screen.getByRole('button', { name: en.switcherLabel }).textContent)
       .toBe('标准模式 (default)')
@@ -278,7 +356,7 @@ describe('PluginInventorySettingsTab', () => {
     expect(screen.queryAllByRole('listitem')).toHaveLength(0)
   })
 
-  it('renders a rosterless deployment as one expanded global list', async () => {
+  it('renders a rosterless deployment as one global list, folded until opened', async () => {
     const view = await renderReady({
       entries: [
         { entryId: 'hmr', moduleName: '@deepseek-ai/cordis-plugin-hmr', enabled: true, fiberPhase: 'active' },
@@ -287,13 +365,16 @@ describe('PluginInventorySettingsTab', () => {
     } as unknown as Snapshot)
 
     expect(screen.queryByRole('button', { name: en.switcherLabel })).toBeNull()
+    expect(globalToggle().getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+    fireEvent.click(globalToggle())
     expect(globalToggle().getAttribute('aria-expanded')).toBe('true')
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
 
-    fireEvent.click(screen.getByRole('button', { name: 'hmr, Enabled' }))
+    fireEvent.click(screen.getByRole('button', { name: 'hmr, hmr, Enabled' }))
     expect(screen.getByText(en.runtime)).toBeTruthy()
     expect(view.container.querySelector('[data-loader-entry]')?.textContent).toBe('hmr')
-    fireEvent.click(screen.getByRole('button', { name: 'off, Disabled' }))
+    fireEvent.click(screen.getByRole('button', { name: 'off, off, Disabled' }))
     expect(screen.getAllByText(en.moduleLabel).length).toBeGreaterThan(0)
     expect(screen.queryByText(en.runtime)).toBeNull()
   })
@@ -311,6 +392,8 @@ describe('PluginInventorySettingsTab', () => {
 
     expect(screen.queryByRole('button', { name: (name: string) => name.startsWith(en.globalTitle) })).toBeNull()
     expect(screen.queryByText(en.empty)).toBeNull()
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+    fireEvent.click(presetToggle())
     expect(screen.getAllByRole('listitem')).toHaveLength(1)
   })
 
@@ -344,4 +427,20 @@ describe('PluginInventorySettingsTab', () => {
     pendingFailure.unmount()
     await act(async () => { deferredFailure.reject(new Error('late failure')) })
   })
+})
+
+it('shows current-page sync errors and retries without re-reading Host inventory', async () => {
+  const list = vi.fn(async () => ({ entries: [] }))
+  const sync = createSnapshotStore<ClientEntryState>({ syncing: true, failures: [] })
+  const retryClient = vi.fn()
+  render(<PluginInventorySettingsTab {...props(list)} useClientSync={bindSnapshotSelector(sync)} retryClient={retryClient} />)
+  expect(screen.getByRole('status').textContent).toContain('Syncing plugins on this page')
+  await waitFor(() => { expect(list).toHaveBeenCalledOnce() })
+  act(() => { sync.set({ syncing: false, failures: [{ id: 'client-addon', message: 'download failed' }] }) })
+  expect(screen.getByText('client-addon: download failed')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry this page' }))
+  expect(retryClient).toHaveBeenCalledOnce()
+  expect(list).toHaveBeenCalledOnce()
+  act(() => { sync.set({ syncing: false, failures: [] }) })
+  expect(screen.queryByRole('alert')).toBeNull()
 })

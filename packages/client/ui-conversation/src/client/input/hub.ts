@@ -13,11 +13,13 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
-import { queueReadFaceOf } from './queue-store.ts'
+import type { InboxState } from '@deepseek-ai/dsh-agent/types'
+import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type {
-  ComposerKeyboard, DraftAttachmentId, InputTriggerController, SessionInputResolver, SessionInput,
-  SubmitImageAttachment, SubmitOutcome,
+  DraftAttachmentId, DraftAttachmentSerializationResult, InputTriggerController,
+  SessionInputResolver, SessionInput, SubmitOutcome,
 } from '../contract/input.ts'
+import type { ComposerKeyboard } from '../contract/draft-editor.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import type { PopupDismissFace } from './facade.ts'
 import { SessionInputShell } from './facade.ts'
@@ -38,17 +40,17 @@ interface ConversationAttachmentFace {
   sendSession(
     session: SessionFace,
     text: string,
-    imageIds: readonly DraftAttachmentId[],
+    attachmentIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal?: AbortSignal,
   ): Promise<SubmitOutcome>
-  serializeDraftImages(imageIds: readonly DraftAttachmentId[]): Promise<readonly SubmitImageAttachment[]>
-  releaseDraftImage(id: DraftAttachmentId): void
+  serializeDraftAttachments(attachmentIds: readonly DraftAttachmentId[]): Promise<DraftAttachmentSerializationResult>
+  releaseDraftAttachment(id: DraftAttachmentId): void
 }
 
 /** Session-addressed input facade registry (SessionInputResolver face + composer-layer extras). */
 export class InputHub implements SessionInputResolver {
-  private readonly shells = new Map<SessionId, SessionInputShell>()
+  private readonly shells = new WeakMap<SessionBinding, SessionInputShell>()
 
   /**
    * @param ctx - client root context (services resolved lazily per call — boot order stays free).
@@ -66,9 +68,12 @@ export class InputHub implements SessionInputResolver {
    */
   for(actx: Context): SessionInput {
     const sessions = this.sessions()
-    const id = sessions.scopeOf(actx)
-    if (id === undefined) throw new Error('conversation.input.for requires a session scope')
-    return this.shell(id)
+    const session = sessions.sessionOf(actx)
+    const binding = session === undefined ? undefined : sessions.binding(session.sessionId)
+    if (binding === undefined || binding.session !== session) {
+      throw new Error('conversation.input.for requires a retained Session scope')
+    }
+    return this.shellFor(binding)
   }
 
   /**
@@ -80,32 +85,35 @@ export class InputHub implements SessionInputResolver {
    * @returns the shell.
    */
   shellFor(binding: SessionBinding): SessionInputShell {
-    const existing = this.shells.get(binding.sessionId)
+    const existing = this.shells.get(binding)
     if (existing !== undefined) return existing
-    const { sessionId: id, session, ctx: actx } = binding
+    const { session, ctx: actx } = binding
     const shell = new SessionInputShell({
       actx,
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),
-      queue: queueReadFaceOf(session),
-      defaultSink: (text, imageIds, mode, signal) => this.sink(session, text, imageIds, mode, signal),
+      inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
+      defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),
       steerQueue: () => { void this.steerQueue(session, shell) },
-      commandImages: {
-        serialize: ids => this.conversation().serializeDraftImages(ids),
+      commandAttachments: {
+        serialize: async (ids) => {
+          const result = await this.conversation().serializeDraftAttachments(ids)
+          return result.attachments
+        },
         // Asymmetric with serialize on purpose: release settles AFTER the
         // submit RPC, where session teardown may already have unloaded the
         // conversation service (the same tolerance as the scope disposer
         // above); leaked preview URLs then die with the document.
         release: (ids) => {
           const conversation = this.rootCtx.get('conversation') as ConversationAttachmentFace | undefined
-          for (const imageId of ids) conversation?.releaseDraftImage(imageId)
+          for (const attachmentId of ids) conversation?.releaseDraftAttachment(attachmentId)
         },
-        unsupportedNotice: token => this.t('command.imagesUnsupported', {
+        unsupportedNotice: token => this.t('command.attachmentsUnsupported', {
           command: token.trim().replace(/^\//u, ''),
         }),
       },
     })
-    this.shells.set(id, shell)
+    this.shells.set(binding, shell)
     // The one teardown axis: listeners, shell, and map entries all ride the
     // scope fiber (nothing here outlives the scope).
     actx.effect(() => {
@@ -122,9 +130,9 @@ export class InputHub implements SessionInputResolver {
       return () => {
         for (const off of offs) off()
         const drafts = shell.dispose()
-        this.shells.delete(id)
+        this.shells.delete(binding)
         const conversation = this.rootCtx.get('conversation') as ConversationAttachmentFace | undefined
-        for (const imageId of drafts) conversation?.releaseDraftImage(imageId)
+        for (const attachmentId of drafts) conversation?.releaseDraftAttachment(attachmentId)
       }
     }, 'conversation.input: session shell')
     return shell
@@ -137,8 +145,6 @@ export class InputHub implements SessionInputResolver {
    * @returns the shell.
    */
   shell(id: SessionId): SessionInputShell {
-    const existing = this.shells.get(id)
-    if (existing !== undefined) return existing
     const binding = this.sessions().binding(id)
     if (binding === undefined) throw new Error(`conversation.input: session "${id}" resolved no binding`)
     return this.shellFor(binding)
@@ -156,14 +162,33 @@ export class InputHub implements SessionInputResolver {
   }
 
   /**
+   * Query file intake without creating a Session input.
+   * @param id - target Session.
+   * @returns whether its mounted composer currently accepts files.
+   */
+  canPickFiles(id: SessionId): boolean {
+    const binding = this.sessions().binding(id)
+    return binding !== undefined && this.shells.get(binding)?.canPickFiles() === true
+  }
+
+  /**
+   * Open the target composer's file dialog under its live intake policy.
+   * @param id - target Session.
+   */
+  pickFiles(id: SessionId): void {
+    const binding = this.sessions().binding(id)
+    if (binding !== undefined) this.shells.get(binding)?.pickFiles()
+  }
+
+  /**
    * Resolve the optional slash controller for composer chrome that launches
    * the shared candidate menu without typing a trigger.
    * @param id - session id.
    * @returns the resident controller, or undefined when no trigger provider is installed.
    */
   inputTriggers(id: SessionId): InputTriggerController | undefined {
-    const actx = this.sessions().scope(id)
-    return actx === undefined ? undefined : this.controller(actx)
+    const binding = this.sessions().binding(id)
+    return binding === undefined ? undefined : this.controller(binding.ctx)
   }
 
   /**
@@ -175,28 +200,29 @@ export class InputHub implements SessionInputResolver {
   private sink(
     session: SessionFace,
     text: string,
-    imageIds: readonly DraftAttachmentId[],
+    attachmentIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal: AbortSignal,
   ): Promise<SubmitOutcome> {
-    if (text === '' && imageIds.length === 0) return Promise.resolve({ kind: 'success' })
-    return this.conversation().sendSession(session, text, imageIds, mode, signal)
+    if (text === '' && attachmentIds.length === 0) return Promise.resolve({ kind: 'success' })
+    return this.conversation().sendSession(session, text, attachmentIds, mode, signal)
   }
 
   /**
-   * Steer every still-pending queued message into the running turn, in FIFO
-   * order — the same strict-steer operation as the queue dock's per-row
-   * button. A turn closing mid-way (`session/steer-unavailable`) or a row already
+   * Submit every still-pending queued message through QueueDock Steer, in FIFO
+   * request order — the same operation as the queue dock's per-row button.
+   * An Agent stopping before a command (`session/steer-unavailable`) or a row already
    * claimed by the agent (`session/queue-item-not-found`) converges silently, while a
    * genuine failure surfaces as one composer notice. Repeated triggers
    * (e.g. two rapid empty-draft chords) rely on that `session/queue-item-not-found`
    * convergence: the snapshot may still list a row the host already steered,
-   * and the duplicate strict steer is a silent no-op.
+   * and the duplicate Steer is a silent no-op.
    * @param session - the addressed host session.
    * @param shell - the resident shell (notice outlet).
    */
   private async steerQueue(session: SessionFace, shell: SessionInputShell): Promise<void> {
-    const queued = session.getSnapshot().queue.filter(item => item.placement === 'queued')
+    const inbox = session.projections.faceOf('inbox').getSnapshot() as InboxState | undefined
+    const queued = inbox?.['next-turn'] ?? []
     if (queued.length === 0) return
     for (const item of queued) {
       const result = await session.updateQueue(item.id, { kind: 'steer' })
@@ -208,11 +234,13 @@ export class InputHub implements SessionInputResolver {
   }
 
   private controller(actx: Context): InputTriggerController | undefined {
+    if (this.sessions().sessionOf(actx) === undefined) return undefined
     const inputTriggers = this.rootCtx.get('inputTriggers') as InputTriggerServiceFace | undefined
     return inputTriggers?.sessionOf(actx)
   }
 
   private popup(actx: Context): PopupDismissFace | undefined {
+    if (this.sessions().sessionOf(actx) === undefined) return undefined
     const command = this.rootCtx.get('commandUi') as CommandFace | undefined
     return command?.popupFor(actx)
   }

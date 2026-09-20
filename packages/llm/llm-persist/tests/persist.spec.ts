@@ -121,7 +121,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     }, { random: () => 0.5 }))
-    const agent = context.agentLoop.create(SessionId('persist-empty-response'), {
+    const agent = await context.agentLoop.create(SessionId('persist-empty-response'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -154,7 +154,7 @@ describe('provider-pinned retry persistence', () => {
     await idle
 
     expect(adapter.requests).toHaveLength(2)
-    expect(agent.session.events.filter(item => item.type === 'step/start').map(item => item.data))
+    expect(agent.session.snapshotEvents().filter(item => item.type === 'step/start').map(item => item.data))
       .toEqual([{ turn: 1, step: 1 }])
     expect(agent.session.deriveMessages().at(-1)).toEqual({
       id: expect.any(String) as unknown,
@@ -175,7 +175,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     }, { random: () => 0.5 }))
-    const agent = context.agentLoop.create(SessionId('persist-chain'), {
+    const agent = await context.agentLoop.create(SessionId('persist-chain'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -197,7 +197,7 @@ describe('provider-pinned retry persistence', () => {
     await idle
 
     expect(adapter.requests).toHaveLength(3)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist-started')).toHaveLength(2)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist-started')).toHaveLength(2)
     expect(agent.session.deriveMessages().at(-1)).toMatchObject({
       role: 'assistant',
       content: [{ type: 'text', text: 'recovered' }],
@@ -207,7 +207,7 @@ describe('provider-pinned retry persistence', () => {
   it('delegates providers outside the configured set', async () => {
     const adapter = new ScriptedAdapter([emptyCompletion()])
     ;({ ctx: context } = await harness(adapter))
-    const agent = context.agentLoop.create(SessionId('persist-unmatched-provider'), {
+    const agent = await context.agentLoop.create(SessionId('persist-unmatched-provider'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -215,7 +215,7 @@ describe('provider-pinned retry persistence', () => {
     await waitForIdle(context, agent)
 
     expect(adapter.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist')).toHaveLength(0)
   })
 
   it('delegates failures outside the configured codes', async () => {
@@ -224,7 +224,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       codes: ['SERVER'],
     }))
-    const agent = context.agentLoop.create(SessionId('persist-unmatched-code'), {
+    const agent = await context.agentLoop.create(SessionId('persist-unmatched-code'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -232,7 +232,7 @@ describe('provider-pinned retry persistence', () => {
     await waitForIdle(context, agent)
 
     expect(adapter.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist')).toHaveLength(0)
   })
 
   it('honors providerRetryAfterMs within the backoff cap', async () => {
@@ -245,7 +245,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     }, { random: () => 0.5 }))
-    const agent = context.agentLoop.create(SessionId('persist-retry-after'), {
+    const agent = await context.agentLoop.create(SessionId('persist-retry-after'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -271,7 +271,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     }, { random: () => 0.5 }))
-    const agent = context.agentLoop.create(SessionId('persist-retry-after-cap'), {
+    const agent = await context.agentLoop.create(SessionId('persist-retry-after-cap'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -297,7 +297,7 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0.1 },
     }, { random: () => 0 }))
-    const agent = context.agentLoop.create(SessionId('persist-jitter'), {
+    const agent = await context.agentLoop.create(SessionId('persist-jitter'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -324,7 +324,7 @@ describe('provider-pinned retry persistence', () => {
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     }, { random: () => 0.5 })
     context = built.ctx
-    const agent = context.agentLoop.create(SessionId('persist-cancel'), {
+    const agent = await context.agentLoop.create(SessionId('persist-cancel'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -336,7 +336,7 @@ describe('provider-pinned retry persistence', () => {
     await vi.advanceTimersByTimeAsync(500)
 
     expect(adapter.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist-started')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist-started')).toHaveLength(0)
   })
 
   it('refuses recovery for a callback captured before disposal', async () => {
@@ -353,7 +353,7 @@ describe('provider-pinned retry persistence', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 100))
       return next()
     }, { prepend: true })
-    const agent = context.agentLoop.create(SessionId('persist-stale-callback'), {
+    const agent = await context.agentLoop.create(SessionId('persist-stale-callback'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -365,7 +365,7 @@ describe('provider-pinned retry persistence', () => {
     await waitForIdle(context, agent)
 
     expect(adapter.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'llm/persist')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist')).toHaveLength(0)
   })
 
   it('reads the live settings section for recovery decisions', async () => {
@@ -399,7 +399,7 @@ describe('provider-pinned retry persistence', () => {
       codes: ['SERVER'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },
     })
-    const agent = context.agentLoop.create(SessionId('persist-settings-live'), {
+    const agent = await context.agentLoop.create(SessionId('persist-settings-live'), {
       provider: 'mock',
       model: 'mock',
     })

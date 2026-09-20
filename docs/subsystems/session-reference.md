@@ -34,7 +34,7 @@ interface SessionReferenceInput {
 }
 ```
 
-`SessionReferenceCandidate` is host-facing discovery output. Its label uses the latest session title when present, and filtering searches that label alongside session id and cwd, never transcript text.
+`SessionReferenceCandidate` is host-facing discovery output. Its `label` uses the latest Session title when present, while its optional display text prefers a subagent's durable creation label; filtering searches both alongside Session id and cwd, never transcript text. The Remote candidate's canonical mention uses the display text when present.
 
 ```ts type-equiv
 /** One host-facing candidate from exact session metadata. */
@@ -43,6 +43,8 @@ interface SessionReferenceCandidate {
   sessionId: SessionId
   /** Latest log-backed title, falling back to the opaque session id. */
   label: string
+  /** Display and canonical-mention text, preferring a subagent's durable creation label over {@link label}. */
+  displayTitle?: string
   /** Source session working directory, when recorded. */
   cwd?: string
   /**
@@ -68,7 +70,31 @@ interface SessionReferenceMentionCandidate extends SessionReferenceCandidate {
 
 ## Prepared messages
 
-Preparation preserves readable current-message content and returns at most one aggregated context.
+Preparation preserves readable current-message content and returns at most one aggregated context. Its durable source records keep `capturedThroughSeq` as a coordinate in the referenced Session's original generation; they never reinterpret it as a seq in the containing Session. `capturedFormatVersion` records that generation, with absence meaning released format v0.
+
+```ts type-equiv
+/** Durable source session, cited event seqs, and snapshot facts for prepared cross-session context. */
+interface SessionReferenceSource {
+  kind: 'session-reference'
+  /** Material lifted out of another session's log (`recall` context form). */
+  form: 'recall'
+  version: 1
+  references: {
+    sessionId: string
+    label: string
+    /** Source Session format generation; absence identifies version 0. */
+    capturedFormatVersion?: number
+    capturedThroughSeq: OptionalSessionSeq
+    compacted: boolean
+    originalMessages: number
+    retainedMessages: number
+    omittedMessages: number
+    omittedBytes: number
+    truncated: boolean
+    inputIndex: number
+  }[]
+}
+```
 
 ```ts type-equiv
 /** Direct message content and optional referenced-session context. */
@@ -156,14 +182,13 @@ Exact-read consumer that prepares immutable cross-session message context.
 /**
  * List reference candidates, ranked by working-directory affinity.
  *
- * Discovery runs at keystroke rate, so a title only ever comes from a
- * projection read: see {@link SessionReferenceResolver.projectedTitle} for
- * which sessions can answer one and which fall back to their id.
+ * Discovery runs at keystroke rate, so titles and subagent labels only ever
+ * come from projection reads; sessions without either fall back to their id.
  * @param agent - target agent; self is excluded and its cwd drives ranking.
- * @param query - optional case-insensitive session-id/cwd/title substring.
+ * @param query - optional case-insensitive session-id/cwd/title/display-title substring.
  * @param limit - optional positive result cap.
  * @param signal - optional cancellation boundary for host autocomplete teardown.
- * @returns candidates labeled by latest title or, when absent, session id.
+ * @returns candidates with canonical mention labels and presentation titles.
  */
 async listCandidates( agent: Agent, query: string = '', limit: number = this.config.candidateLimit, signal?: AbortSignal, ): Promise<SessionReferenceCandidate[]>
 
@@ -180,6 +205,10 @@ async listCandidates( agent: Agent, query: string = '', limit: number = this.con
 
 /**
  * Snapshot all references for one accepted direct message and return one aggregated durable context.
+ * Automatic budgets use the last assembled route, or agent options before any assembly.
+ * Missing model capacity or adapter uses 64 KiB; other metadata lookup failures and cancellation reject preparation.
+ * Truncated previews include omission facts and a full-snapshot spill locator, or an explicit unavailable notice.
+ * Cancellation prevents context publication, including when storage completes after cancellation.
  * @param agent - target agent; references to it are rejected.
  * @param content - already host-normalized readable message content.
  * @param references - structured source sessions in mention order.

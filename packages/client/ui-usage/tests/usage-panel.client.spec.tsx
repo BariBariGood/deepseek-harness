@@ -91,13 +91,13 @@ describe('UsagePanel', () => {
     const ui = mount({ refresh: slow })
 
     fireEvent.click(trigger(ui))
-    await waitFor(() => expect(ui.refresh).toHaveBeenCalledTimes(1))
+    await waitFor(() => { expect(ui.refresh).toHaveBeenCalledTimes(1) })
     release(bothOk())
     await ui.findByText('OpenRouter')
 
     fireEvent.click(ui.getByLabelText(zh['action.refresh']))
     expect(ui.getByText('OpenRouter')).toBeTruthy()
-    await waitFor(() => expect(ui.refresh).toHaveBeenCalledTimes(2))
+    await waitFor(() => { expect(ui.refresh).toHaveBeenCalledTimes(2) })
   })
 
   it('surfaces a failed pull as an alert and keeps the trigger usable', async () => {
@@ -123,7 +123,7 @@ describe('UsagePanel', () => {
     fireEvent.click(trigger(ui)) // close
     fireEvent.click(trigger(ui)) // open again
 
-    await waitFor(() => expect(ui.refresh).toHaveBeenCalledTimes(2))
+    await waitFor(() => { expect(ui.refresh).toHaveBeenCalledTimes(2) })
   })
 })
 

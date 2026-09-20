@@ -7,11 +7,11 @@ import {
   FISH_LOGO_PATH, FISH_LOGO_VIEWBOX, IconChevronDownOutline14, IconFolderClose16, IconFolderOpen16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
-import type { ConversationSlotProps } from '../contract/slots.ts'
+import type { ConversationContentProps } from '../contract/slots.ts'
 import css from './HeroShell.module.css'
 
 /** The owner's locale seat type, passed to hero chrome as a plain prop. */
-type HeroTranslate = ConversationSlotProps['t']
+type HeroTranslate = ConversationContentProps['t']
 
 /**
  * Basename label for the workspace chip (the shared derivation);
@@ -66,7 +66,7 @@ export interface HeroShellProps {
   /** The owner's locale seat, passed down as a plain prop. */
   t: HeroTranslate
   /** Authorized renderer for the hero brand-mark slot. */
-  renderSlot: ConversationSlotProps['renderSlot']
+  renderSlot: ConversationContentProps['renderSlot']
   /** Overlay content after the stack (modals). */
   children?: ReactNode
 }
@@ -149,10 +149,11 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
               fallback: <HeroFish hovering={hovering} />,
             })}
           </span>
-          <span className={css.headlineText}>
-            {t('hero.headline')}
+          <span className={css.titleGroup}>
+            {/* Own element: keeps the headline text addressable apart from the badge. */}
+            <span>{t('hero.headline')}</span>
+            <span className={css.previewBadge}>{t('hero.preview')}</span>
           </span>
-          <span className={css.previewBadge}>{t('hero.preview')}</span>
         </div>
         <div className={css.body}>
           {/* The composer remains mounted outside this component. */}

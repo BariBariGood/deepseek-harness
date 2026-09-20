@@ -7,7 +7,7 @@
 
 import type { UserMessage } from '@deepseek-ai/dsh-llm/message'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { OptionalSessionSeq, SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Durable source session, cited event seqs, and snapshot facts for prepared cross-session context. */
 export interface SessionReferenceSource {
@@ -18,7 +18,9 @@ export interface SessionReferenceSource {
   references: {
     sessionId: string
     label: string
-    capturedThroughSeq: number | null
+    /** Source Session format generation; absence identifies version 0. */
+    capturedFormatVersion?: number
+    capturedThroughSeq: OptionalSessionSeq
     compacted: boolean
     originalMessages: number
     retainedMessages: number
@@ -49,6 +51,8 @@ export interface SessionReferenceCandidate {
   sessionId: SessionId
   /** Latest log-backed title, falling back to the opaque session id. */
   label: string
+  /** Display and canonical-mention text, preferring a subagent's durable creation label over {@link label}. */
+  displayTitle?: string
   /** Source session working directory, when recorded. */
   cwd?: string
   /**

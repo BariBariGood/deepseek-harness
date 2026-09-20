@@ -1,6 +1,6 @@
 /** The Telegram-origin sessions section: platform header + session rows. */
 
-import { IconSendOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSendOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import clsx from 'clsx'
 import { useState } from 'react'
 import { IconTriangleRightFill14 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -24,13 +24,13 @@ export function TelegramSection({
   nodes: readonly SessionNode[]
   /** Persisted fold state; the section renders nothing while it has no rows. */
   expanded: boolean
-  onToggle(): void
+  onToggle: () => void
   currentId: SessionNode['id'] | undefined
   now: number
-  onOpen(sessionId: SessionNode['id']): void
-  onFork(sessionId: SessionNode['id']): void
-  onRename(sessionId: SessionNode['id'], currentTitle: string): void
-  onArchive(sessionId: SessionNode['id']): void
+  onOpen: (sessionId: SessionNode['id']) => void
+  onFork: (sessionId: SessionNode['id']) => void
+  onRename: (sessionId: SessionNode['id'], currentTitle: string) => void
+  onArchive: (sessionId: SessionNode['id']) => void
   label: string
   t: RowTranslate
 }) {
@@ -46,7 +46,7 @@ export function TelegramSection({
         onClick={onToggle}
       >
         <span className={clsx(rowsCss.slot, rowsCss.folder)}>
-          <IconSendOutline16 />
+          <IconSendOutline14 />
         </span>
         <span className={clsx(rowsCss.slot, rowsCss.chevron)}>
           <IconTriangleRightFill14 className={clsx(rowsCss.arrow, expanded && rowsCss.arrowOpen)} />

@@ -21,10 +21,10 @@ describe('parseOpenRouterCredits', () => {
   })
 
   it('rejects payloads without a data object or with non-finite totals', () => {
-    expect(() => parseOpenRouterCredits(null)).toThrowError()
-    expect(() => parseOpenRouterCredits({})).toThrowError(/data/)
-    expect(() => parseOpenRouterCredits({ data: { total_credits: '10', total_usage: 0 } })).toThrowError(/total_credits/)
-    expect(() => parseOpenRouterCredits({ data: { total_credits: Number.NaN, total_usage: 0 } })).toThrowError(/total_credits/)
+    expect(() => parseOpenRouterCredits(null)).toThrow()
+    expect(() => parseOpenRouterCredits({})).toThrow(/data/)
+    expect(() => parseOpenRouterCredits({ data: { total_credits: '10', total_usage: 0 } })).toThrow(/total_credits/)
+    expect(() => parseOpenRouterCredits({ data: { total_credits: Number.NaN, total_usage: 0 } })).toThrow(/total_credits/)
   })
 })
 
@@ -52,8 +52,8 @@ describe('parseOpenCodeGoUsage', () => {
   })
 
   it('rejects payloads whose usage object is missing', () => {
-    expect(() => parseOpenCodeGoUsage({})).toThrowError(/usage/)
-    expect(() => parseOpenCodeGoUsage(undefined)).toThrowError()
+    expect(() => parseOpenCodeGoUsage({})).toThrow(/usage/)
+    expect(() => parseOpenCodeGoUsage(undefined)).toThrow()
   })
 })
 
@@ -80,20 +80,20 @@ describe('provider fetch wrappers', () => {
     const fetchImpl: FetchImpl = async () =>
       new Response('{"error":"bad key"}', { status: 401 })
     await expect(fetchOpenRouterCredits('key-value', 1000, fetchImpl))
-      .rejects.toThrowError(/HTTP 401/)
+      .rejects.toThrow(/HTTP 401/)
   })
 
   it('wraps transport failures from both providers', async () => {
     const fetchImpl: FetchImpl = async () => {
       throw new TypeError('network down')
     }
-    await expect(fetchOpenRouterCredits('k', 1000, fetchImpl)).rejects.toThrowError(/network down/)
-    await expect(fetchOpenCodeGoUsage('k', 1000, fetchImpl)).rejects.toThrowError(/network down/)
+    await expect(fetchOpenRouterCredits('k', 1000, fetchImpl)).rejects.toThrow(/network down/)
+    await expect(fetchOpenCodeGoUsage('k', 1000, fetchImpl)).rejects.toThrow(/network down/)
   })
 
   it('rejects non-JSON success bodies', async () => {
     const fetchImpl: FetchImpl = async () => new Response('<html></html>')
-    await expect(fetchOpenCodeGoUsage('k', 1000, fetchImpl)).rejects.toThrowError(/not JSON/)
+    await expect(fetchOpenCodeGoUsage('k', 1000, fetchImpl)).rejects.toThrow(/not JSON/)
   })
 })
 
@@ -125,13 +125,15 @@ describe('UsageGateway timeout resolution', () => {
   it('resolves the schema default when constructed without config', async () => {
     const { Context } = await import('@deepseek-ai/cordis') as { Context: new () => Context }
     const signals: unknown[] = []
+    const urlText = (fetched: string | URL | Request): string =>
+      typeof fetched === 'string' ? fetched : fetched instanceof URL ? fetched.href : fetched.url
     vi.stubGlobal('fetch', (async (url: string | URL | Request, init?: RequestInit) => {
       signals.push(init?.signal)
-      const body = String(url).includes('openrouter')
+      const body = urlText(url).includes('openrouter')
         ? { data: { total_credits: 1, total_usage: 0 } }
         : { usage: {} }
       return okResponse(body)
-    }) as unknown as typeof fetch)
+    }))
 
     const ctx = new Context()
     // The CredentialProvider base registers itself under `credentials`.

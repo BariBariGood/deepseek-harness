@@ -31,6 +31,9 @@ interface LegacyConversationSlice {
   readonly nodes: readonly ConversationNode[]
 }
 
+const EMPTY_LOCATION_DATA_SOURCE = { getSnapshot: () => undefined, subscribe: () => () => {} }
+const EMPTY_LOCATION_DATA = { get: () => undefined, source: () => EMPTY_LOCATION_DATA_SOURCE }
+
 afterEach(cleanup)
 
 describe('TrajectoryTurnHeader', () => {
@@ -271,7 +274,7 @@ describe('deriveTrajectoryLayout', () => {
         blocks: [{ kind: 'text', text: 'second step' }],
       },
     ] as unknown as LegacyConversationSlice['nodes']
-    const data = { get: () => undefined }
+    const data = EMPTY_LOCATION_DATA
     const step = { turn: 1, step: 2, start: undefined, end: undefined, status: 'open' as const, data }
     const turn = {
       turn: 1, start: undefined, end: undefined, status: 'open' as const, steps: [step], data,
@@ -303,7 +306,7 @@ describe('deriveTrajectoryLayout', () => {
       kind: 'steering', messageId: 'steer-1', seq: 3, time: 3_000,
       content: [{ type: 'text', text: 'change direction' }], source: null,
     }] as unknown as LegacyConversationSlice['nodes']
-    const data = { get: () => undefined }
+    const data = EMPTY_LOCATION_DATA
     const step = { turn: 1, step: 2, start: undefined, end: undefined, status: 'open' as const, data }
     const turn = {
       turn: 1, start: undefined, end: undefined, status: 'open' as const, steps: [step], data,
@@ -589,8 +592,8 @@ describe('durable image attachments', () => {
     expect(user?.text).toBe('Images ×2')
     expect(user?.previewMarkdown).toBeUndefined()
     expect(user?.sourceBlocks).toEqual([
-      { type: 'image', content: '', attachment },
-      { type: 'image', content: '', attachment },
+      { type: 'image', content: JSON.stringify({ type: 'image', attachment }, null, 2), attachment },
+      { type: 'image', content: JSON.stringify({ type: 'image', attachment }, null, 2), attachment },
     ])
   })
 
@@ -616,9 +619,9 @@ describe('durable image attachments', () => {
     ] as unknown as LegacyConversationSlice['nodes']
     const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
     const user = turns[0]?.groups[0]?.cells[0]
-    expect(user?.text).toBe('')
+    expect(user?.text).toBe('Images ×1')
     expect(user?.previewMarkdown).toBe('look at this')
-    expect(user?.sourceBlocks?.[1]).toEqual({ type: 'image', content: '', attachment })
+    expect(user?.sourceBlocks?.[1]).toEqual({ type: 'image', content: JSON.stringify({ type: 'image', attachment }, null, 2), attachment })
   })
 
   it('maps assistant image blocks to attachment source blocks and labels image-only output', () => {
@@ -631,7 +634,7 @@ describe('durable image attachments', () => {
     const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
     const message = turns[0]?.groups.flatMap(g => g.cells).find(c => c.kind === 'message')
     expect(message?.text).toBe('Images ×1')
-    expect(message?.sourceBlocks).toEqual([{ type: 'image', content: '', attachment }])
+    expect(message?.sourceBlocks).toEqual([{ type: 'image', content: JSON.stringify({ type: 'image', attachment }, null, 2), attachment }])
   })
 
   it('carries tool-result image refs into outputBlocks and labels the result', () => {
@@ -650,7 +653,7 @@ describe('durable image attachments', () => {
     const tool = turns[0]?.groups.flatMap(g => g.cells).find(c => c.kind === 'tool')
     expect(tool?.result).toBe('Images ×1')
     expect(tool?.outputDetail).toBe('Images ×1')
-    expect(tool?.outputBlocks).toEqual([{ type: 'image', content: '', attachment }])
+    expect(tool?.outputBlocks).toEqual([{ type: 'image', content: JSON.stringify({ type: 'image', attachment }, null, 2), attachment }])
   })
 
   it('shows wire-shaped blocks without an attachment as JSON, not as an image', () => {
@@ -664,5 +667,61 @@ describe('durable image attachments', () => {
     const block = turns[0]?.groups[0]?.cells[0]?.sourceBlocks?.[0]
     expect(block?.attachment).toBeUndefined()
     expect(block?.content).toContain('https://example.com/a.png')
+  })
+})
+
+describe('durable file attachments', () => {
+  const attachment = {
+    attachmentId: `sha256:${'d'.repeat(64)}`,
+    name: 'notes.pdf',
+    bytes: 2447 * 1024 * 1024,
+  }
+
+  it('labels file-only and mixed-text user records', () => {
+    const nodes = [
+      {
+        kind: 'user', seq: 1, time: 1_000, source: null,
+        content: [{ type: 'file', attachment }, { type: 'file', attachment }],
+      },
+      {
+        kind: 'user', seq: 2, time: 2_000, source: null,
+        content: [{ type: 'text', text: 'review these' }, { type: 'file', attachment }],
+      },
+    ] as unknown as LegacyConversationSlice['nodes']
+    const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
+    const users = turns.flatMap(turn => turn.groups).flatMap(group => group.cells)
+      .filter(cell => cell.kind === 'user')
+    expect(users[0]?.text).toBe('Files ×2')
+    expect(users[0]?.previewMarkdown).toBeUndefined()
+    expect(users[1]).toMatchObject({ text: 'Files ×1', previewMarkdown: 'review these' })
+  })
+
+  it.each([undefined, '', 'review these'])('keeps both counts and repeated attachments with text %j', (text) => {
+    const image = {
+      attachmentId: `sha256:${'e'.repeat(64)}`,
+      mediaType: 'image/png',
+      bytes: 68,
+      width: 640,
+      height: 320,
+    }
+    const nodes = [{
+      kind: 'user', seq: 1, time: 1_000, source: null,
+      content: [
+        ...(text === undefined ? [] : [{ type: 'text', text }]),
+        { type: 'image', attachment: image },
+        { type: 'file', attachment },
+        { type: 'image', attachment: image },
+      ],
+    }] as unknown as LegacyConversationSlice['nodes']
+    const turns = deriveTrajectoryLayout({ nodes, partial: null, runningCalls: [] })
+    const cell = turns[0]?.groups[0]?.cells[0]
+    expect(cell?.text).toBe('Images ×2 · Files ×1')
+    const blocks = cell?.sourceBlocks?.filter(block => block.type !== 'text')
+    expect(blocks?.map(block => block.attachment ?? block.file)).toEqual([image, attachment, image])
+    expect(blocks?.map((block): unknown => JSON.parse(block.content))).toEqual([
+      { type: 'image', attachment: image },
+      { type: 'file', attachment },
+      { type: 'image', attachment: image },
+    ])
   })
 })

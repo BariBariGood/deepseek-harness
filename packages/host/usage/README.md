@@ -14,9 +14,23 @@ Host usage billing projection for OpenRouter and OpenCode Go. UsageGateway expos
 ## Table of Contents
 
 - Summary
-- Table of Contents
+- Model Experience
+- Known Limitations and Deferred Work
 - Dev Note
 
+## Model Experience
+
+None, as the gateway reads billing endpoints and registers nothing model-facing.
+
+#### KV Cache effect
+
+None; this package neither assembles nor sends a provider request.
+
+## Known Limitations and Deferred Work
+
+- **Two fixed providers** — the report roster is the OpenRouter/OpenCode Go pair this deployment uses; a provider roster configuration waits for a third billing surface.
+
+<a id="dev-note"></a>
 ### Dev Note
 
 Implementation details and maintenance notes.

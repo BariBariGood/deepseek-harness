@@ -14,9 +14,24 @@ Telegram channel into the agent: one bot token long-polls the Bot API and relays
 ## Table of Contents
 
 - Summary
-- Table of Contents
+- Model Experience
+- Known Limitations and Deferred Work
 - Dev Note
 
+## Model Experience
+
+None, as the channel is transport into the agent factory; the composed preset owns everything model-facing the resulting sessions see.
+
+#### KV Cache effect
+
+None; this package neither assembles nor sends a provider request.
+
+## Known Limitations and Deferred Work
+
+- **Text-only inbound updates** — media, stickers, and edited messages are dropped; a media pipeline waits for a consumer that needs it.
+- **Single bot token** — one credential per deployment; multi-tenant token pools are out of scope.
+
+<a id="dev-note"></a>
 ### Dev Note
 
 Implementation details and maintenance notes.
