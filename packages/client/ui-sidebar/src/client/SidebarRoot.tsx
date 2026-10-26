@@ -19,12 +19,14 @@
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
-  FishLogo, IconNewChatOutline16, IconPanelLeftOutline16, isDarwinDesktop, Tooltip,
+  FishLogo, IconAppsAddOutlineRegular, IconNewChatOutlineMedium, IconNewChatOutlineRegular, IconPanelLeftOutlineRegular,
+  isDarwinDesktop, Menu, ShortcutKeys, Toast, Tooltip, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
-  SidebarPanelMetadata, SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps,
+  SidebarPanelActionsOwnerProps, SidebarPanelMetadata, SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps,
 } from './contract/slots.ts'
+import { FIXED_PANEL_ID } from './panel-pins.ts'
 import css from './SidebarRoot.module.css'
 
 /** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
@@ -52,11 +54,17 @@ type PanelRowProps =
   Pick<SidebarPanelMetadata, 'id' | 'label'>
   & Pick<SidebarSectionOwnerProps, 'wide'>
   & Pick<PropsRuntime<'sidebar'>, 'usePanelInfo'>
-  & Pick<InjectFace<SidebarRootInjected>, 'selectPanel'>
+  & Pick<InjectFace<SidebarRootInjected>, 'selectPanel' | 'trackEntryClick'>
   & PropsRenderSlots<'sidebar.panellist'>
 
+/** Analytics category of an official panel; other panels are never reported. */
+function officialEntry(id: string): 'plugin' | 'cron' | undefined {
+  if (id === 'plugins') return 'plugin'
+  return id === 'schedules' ? 'cron' : undefined
+}
+
 /** Each panel row subscribes only to its own selection state. */
-function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
+function PanelRow({ id, label, wide, usePanelInfo, selectPanel, trackEntryClick, renderSlot }: PanelRowProps) {
   const active = usePanelInfo(info => info.activePanelId === id)
   return (
     <Tooltip label={label} delayMs={500} disabled={wide}>
@@ -65,7 +73,11 @@ function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: Pa
         className={clsx(css.panelRow, active && css.panelActive)}
         aria-label={label}
         aria-current={active ? 'page' : undefined}
-        onClick={() => { selectPanel(id) }}
+        onClick={() => {
+          const entry = officialEntry(id)
+          if (entry !== undefined) trackEntryClick({ menu_name: entry, position: 'sidebar' })
+          selectPanel(id)
+        }}
       >
         <span className={css.panelGlyph} aria-hidden="true">
           {renderSlot('sidebar.panellist', { size: wide ? 16 : 18, active }, { only: id })}
@@ -80,6 +92,36 @@ function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: Pa
   )
 }
 
+type PanelMoreMenuProps =
+  Pick<SidebarSectionOwnerProps, 'wide'>
+  & Omit<SidebarPanelActionsOwnerProps, 'onDismiss'>
+  & PropsRenderSlots<'sidebar.panellist.actions'>
+  & Pick<InjectFace<SidebarRootInjected>, 'trackEntryClick'>
+  & { readonly label: string }
+
+/** The panel list's More launcher: a panel-row button whose menu rows come from `sidebar.panellist.actions`. */
+function PanelMoreMenu({ wide, label, entries, onOpen, onPinnedChange, trackEntryClick, renderSlot }: PanelMoreMenuProps) {
+  const [open, setOpen] = useState(false)
+  const onDismiss = (): void => { setOpen(false) }
+  return (
+    <Menu open={open} onClose={onDismiss} portal autoFocus className={css.moreAnchor} listClassName={css.moreMenu}
+      anchor={(
+        <Tooltip label={label} delayMs={500} disabled={wide}>
+          <button type="button" className={css.panelRow} aria-label={label} aria-haspopup="menu" aria-expanded={open}
+            onClick={() => {
+              trackEntryClick({ menu_name: 'more', position: 'sidebar' })
+              setOpen(value => !value)
+            }}>
+            <span className={css.panelGlyph} aria-hidden="true"><IconAppsAddOutlineRegular size={wide ? 16 : 18} /></span>
+            {wide && <span className={clsx(css.panelTitle, css.wide)}>{label}</span>}
+          </button>
+        </Tooltip>
+      )}>
+      {renderSlot('sidebar.panellist.actions', { entries, onOpen, onPinnedChange, onDismiss })}
+    </Menu>
+  )
+}
+
 /**
  * Render the sidebar column shell.
  * @param props - composed slot props (runtime share + injected callbacks, contract/slots.ts).
@@ -91,12 +133,26 @@ export function SidebarRoot({
   startSession,
   toggleSidebar,
   selectPanel,
+  setPinned,
+  trackEntryClick,
+  useRemoteAccess,
   usePanels,
+  useEntryPins,
+  useEntryActions,
+  useShortcuts,
   usePanelInfo,
   t,
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels(snapshot => snapshot)
+  const unpinned = useEntryPins(ids => ids)
+  const activePanelId = usePanelInfo(info => info.activePanelId)
+  const hasEntryActions = useEntryActions(registered => registered)
+  const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
+  const newShortcut = useShortcuts(rows => rows.find(row => row.id === 'session.new'))
+  // A page whose access snapshot excludes starting a Session offers no New Session affordance.
+  const canStartSession = useRemoteAccess('session/create')
+  const toggleLabel = collapsed ? t('toggle.open') : t('toggle.collapse')
   // Wide content stays mounted while the collapse animates (fading via
   // .collapsed .wide), unmounts at settle, and remounts right away on expand.
   const [settled, setSettled] = useState(collapsed)
@@ -107,7 +163,15 @@ export function SidebarRoot({
   }, [collapsed])
   const windowsTitlebar = document.documentElement.hasAttribute('data-windows-titlebar')
   const wide = windowsTitlebar ? !collapsed : !collapsed || !settled
-
+  // The Windows titlebar hosts the New Session controls while the sidebar is collapsed.
+  const openNewSession = (): void => {
+    trackEntryClick({ menu_name: 'new_session', position: windowsTitlebar && collapsed ? 'titlebar' : 'sidebar' })
+    startSession()
+  }
+  // The Windows caption menus occupy the strip to the right of these controls
+  // (that is what --dsh-windows-menu-start reserves), so a right-side bubble
+  // lands under their text. Below the caption is the only clear side.
+  const captionTooltipSide = windowsTitlebar ? 'bottom' : 'right'
   // Freeze the content at its expanded width while it fades out (collapsed
   // && wide): the sliding column then clips it instead of reflowing it. The
   // rail layout (.collapsed styles) only applies once the fade settles.
@@ -163,17 +227,28 @@ export function SidebarRoot({
   }, [pointerInside])
 
   const buildVersion = localBuildVersion()
+  // The local-build fallbacks copy the badge text; the brand button below
+  // skips New Session for clicks inside them. The click still bubbles, so
+  // document-level outside-click listeners see it.
+  // Each successful copy bumps the key so a repeated copy replays the toast.
+  const [copiedToast, setCopiedToast] = useState<number | null>(null)
+  const copyVersion = (version: string) => (): void => {
+    void writeClipboard(version).then((ok) => {
+      if (ok) setCopiedToast(seq => (seq ?? 0) + 1)
+    })
+  }
 
   const darwinDesktop = isDarwinDesktop()
   // Rail resting state is the whale mark; hovering swaps in the panel icon
   // (the expand affordance, figma sidebar-hover flow). Expanded it is a plain
   // panel icon.
   const toggle = (
-    <Tooltip label={collapsed ? t('toggle.open') : t('toggle.collapse')} delayMs={500}>
+    <Tooltip label={toggleLabel} shortcutKeys={shortcut?.keys} delayMs={500} side={captionTooltipSide}>
       <button
         type="button"
         className={clsx(css.iconButton, css.toggle)}
-        aria-label={collapsed ? t('toggle.open') : t('toggle.collapse')}
+        aria-label={toggleLabel}
+        aria-keyshortcuts={shortcut?.aria}
         onClick={() => { toggleSidebar() }}
       >
         {!wide && !windowsTitlebar && (
@@ -182,7 +257,7 @@ export function SidebarRoot({
           </span>
         )}
         {/* Rail icons render at 18 (figma rail spec); expanded keeps the glyph-native sizes. */}
-        <IconPanelLeftOutline16 className={css.panelIcon} size={wide || windowsTitlebar ? 16 : 18} />
+        <IconPanelLeftOutlineRegular className={css.panelIcon} size={wide || windowsTitlebar ? 16 : 18} />
         {!wide && renderSlot('sidebar.toggle.badge', {})}
       </button>
     </Tooltip>
@@ -204,27 +279,30 @@ export function SidebarRoot({
     >
       {/* macOS hiddenInset titlebar: the strip shares the row with the
           traffic lights and keeps the toggle at the sidebar's top-right. */}
-      {darwinDesktop && <div className={css.topStrip}>{toggle}</div>}
-      <div className={css.logoRow}>
-        {/* Expanded, the brand doubles as a New Session shortcut; the
-            collapsed rail's logo is the expand toggle below instead. */}
-        {wide && (
-          <button
-            type="button"
-            className={clsx(css.brand, css.wide)}
-            aria-label={t('session.new.label')}
-            onClick={() => { startSession() }}
-          >
+      {darwinDesktop && <div className={css.topStrip} data-window-drag>{toggle}</div>}
+      <div className={css.logoRow} data-window-drag>
+        {/* Expanded, the brand doubles as a New Session shortcut while the
+            access snapshot allows `session/create` — except on
+            macOS, where it stays part of the logo row's window-drag surface
+            (a button would subtract itself through the global no-drag rule);
+            the collapsed rail's logo is the expand toggle below instead.
+            Mouse clicks on the local-build fallbacks copy the version instead. */}
+        {wide && (() => {
+          const identity = (
             <span className={css.brandIdentity} aria-hidden="true">
               <span className={css.brandMark}>
-                {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
+                {renderSlot('sidebar.brand.mark', { size: 24 }, {
+                  fallback: buildVersion === undefined
+                    ? <FishLogo size={24} />
+                    : <span className={css.copyVersion} data-copy-version onClick={copyVersion(buildVersion)}><FishLogo size={24} /></span>,
+                })}
               </span>
               <span className={css.brandName}>
                 {renderSlot('sidebar.brand.name', {}, {
                   fallback: buildVersion === undefined
                     ? <span className={css.fallbackBrandName}>{t('brand.localBuild')}</span>
                     : (
-                      <span className={css.localBuildBrand}>
+                      <span className={clsx(css.localBuildBrand, css.copyVersion)} data-copy-version onClick={copyVersion(buildVersion)}>
                         <span className={css.localBuildTitle}>{t('brand.localBuild')}</span>
                         <span className={css.buildVersion}>{buildVersion}</span>
                       </span>
@@ -232,27 +310,53 @@ export function SidebarRoot({
                 })}
               </span>
             </span>
-          </button>
-        )}
+          )
+          return darwinDesktop || !canStartSession
+            ? <span className={clsx(css.brand, css.wide)}>{identity}</span>
+            : (
+              <button
+                type="button"
+                className={clsx(css.brand, css.wide)}
+                aria-label={t('session.new.label')}
+                aria-keyshortcuts={newShortcut?.aria}
+                onClick={(event) => {
+                  if ((event.target as Element).closest('[data-copy-version]') !== null) return
+                  openNewSession()
+                }}
+              >
+                {identity}
+              </button>
+            )
+        })()}
         {!darwinDesktop && toggle}
       </div>
 
-      {/* Expanded, the button carries its own label — tooltip only on the rail. */}
-      <Tooltip label={t('session.new.label')} delayMs={500} disabled={wide}>
-        <button
-          type="button"
-          className={css.newSession}
-          aria-label={t('session.new.label')}
-          onClick={() => { startSession() }}
-        >
-          <IconNewChatOutline16 size={wide ? 14 : windowsTitlebar ? 16 : 18} />
-          {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
-        </button>
-      </Tooltip>
+      {/* The label fades before the hover/focus shortcut, including on translucent backgrounds. */}
+      {canStartSession && (
+        <Tooltip label={t('session.new.label')} shortcutKeys={newShortcut?.keys} delayMs={500} side={captionTooltipSide} disabled={wide}>
+          <button
+            type="button"
+            className={css.newSession}
+            aria-label={t('session.new.label')}
+            aria-keyshortcuts={newShortcut?.aria}
+            onClick={openNewSession}
+          >
+            <span className={css.newSessionLabelMask}><span className={css.newSessionContent}>
+              {wide
+                ? <IconNewChatOutlineMedium size={14} />
+                : <IconNewChatOutlineRegular size={windowsTitlebar ? 16 : 18} />}
+              {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
+            </span></span>
+            {wide && newShortcut !== undefined && newShortcut.keys.length > 0 && <span className={css.newSessionShortcut} aria-hidden="true">
+              <ShortcutKeys keys={newShortcut.keys} />
+            </span>}
+          </button>
+        </Tooltip>
+      )}
 
       {panels.length > 0 && (
         <nav className={css.panelList} aria-label={t('panels.label')}>
-          {panels.map(({ id, label }) => (
+          {panels.filter(({ id }) => id === FIXED_PANEL_ID || !unpinned.includes(id)).map(({ id, label }) => (
             <PanelRow
               key={id}
               id={id}
@@ -260,9 +364,27 @@ export function SidebarRoot({
               wide={wide}
               usePanelInfo={usePanelInfo}
               selectPanel={selectPanel}
+              trackEntryClick={trackEntryClick}
               renderSlot={renderSlot}
             />
           ))}
+          {hasEntryActions && (
+            <PanelMoreMenu
+              wide={wide}
+              label={t('panels.more')}
+              entries={panels.filter(({ id }) => id !== FIXED_PANEL_ID)
+                .map(({ id, label }) => ({ id, label, pinned: !unpinned.includes(id), active: id === activePanelId }))}
+              onOpen={(id) => {
+                const entry = officialEntry(id)
+                if (entry !== undefined) trackEntryClick({ menu_name: entry, position: 'sidebar_more' })
+                const panel = panels.find(candidate => candidate.id === id)
+                if (panel !== undefined) selectPanel(panel.id)
+              }}
+              onPinnedChange={setPinned}
+              trackEntryClick={trackEntryClick}
+              renderSlot={renderSlot}
+            />
+          )}
         </nav>
       )}
 
@@ -274,6 +396,10 @@ export function SidebarRoot({
           expandSidebar: () => { if (collapsed) toggleSidebar() },
         })}
       </div>
+
+      {copiedToast !== null && (
+        <Toast key={copiedToast} tone="success" text={t('version.copied')} onDone={() => { setCopiedToast(null) }} />
+      )}
 
       {/* Footer actions stack above Settings in both sidebar widths. */}
       <div className={css.footArea}>

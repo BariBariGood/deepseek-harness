@@ -105,6 +105,7 @@ for line in sys.stdin:
                         "arguments": {"command": "git push --force"},
                         "isError": True,
                         "content": [{"type": "text", "text": "Error: blocked by policy"}],
+                        "meta": {"cwd": "/selected", "path": "/selected/note.txt", "view": {"line": 3}},
                         "error": {
                             "name": "AutoReviewDeniedError",
                             "code": "AUTO_REVIEW_DENIED",
@@ -164,6 +165,7 @@ for line in sys.stdin:
     )
 
     with DeepSeekHarness(
+        approval_requests=True,
         model="deepseek-v4-flash",
         reasoning_effort="max",
         max_tokens=4096,
@@ -200,6 +202,7 @@ for line in sys.stdin:
     ]
     ptc_events = [event for event in result.events if event["type"].startswith("tool/ptc-dispatch")]
     assert [event["type"] for event in ptc_events] == ["tool/ptc-dispatch-start", "tool/ptc-dispatch"]
+    assert ptc_events[-1]["data"]["meta"] == {"cwd": "/selected", "path": "/selected/note.txt", "view": {"line": 3}}
     for event in ptc_events:
         assert not {"description", "parameters", "schema"}.intersection(event["data"])
     dumped_env = json.loads(env_dump.read_text())
@@ -209,6 +212,7 @@ for line in sys.stdin:
     assert dumped_env["DSH_SESSION_ROOT"] is None
     assert dumped_env["DSH_CORDIS_CONFIG"] is None
     assert json.loads(init_dump.read_text()) == {
+        "approvalRequests": True,
         "cwd": str(tmp_path),
         "provider": "deepseek-official",
         "model": "deepseek-v4-flash",
@@ -595,6 +599,15 @@ def test_client_keeps_unmatched_notifications_available_globally_while_subscribe
 def test_session_subscription_keeps_descendant_relationships_across_subscriptions() -> None:
     client = HarnessClient()
     with client.subscribe_session_notifications("main") as first:
+        unknown_child = {
+            "type": "subagent/catalog", "seq": 0, "time": 1,
+            "data": {"version": 1, "childId": "unreadable-child", "childCreatedAt": 1, "mode": "unknown"},
+        }
+        client._handle_message({
+            "jsonrpc": "2.0", "method": "session.event",
+            "params": {"sessionId": "main", "event": unknown_child},
+        })
+        assert first.next().payload == {"sessionId": "main", "event": unknown_child}
         client._handle_message({
             "jsonrpc": "2.0",
             "method": "subagent.started",

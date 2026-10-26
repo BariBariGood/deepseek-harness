@@ -7,11 +7,11 @@
  * event ledger with its timing overview, and fiber disposal removes the tab.
  * Timeline projection and inclusive focus edge cases ride along.
  */
-import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
+import type { GlobalStandardProps, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createElement, type ComponentProps, type FC, type ReactNode } from 'react'
-import { bindSnapshotSelector, SlotTestRuntime, stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
+import { allowAllAccess, bindSnapshotSelector, SlotTestRuntime, stubConfigForm } from '@deepseek-ai/dsh-client-test-runtime'
 import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   EMPTY_CONVERSATION_SNAPSHOT, UiConversation,
@@ -39,9 +39,10 @@ import {
 } from '@deepseek-ai/dsh-client-ui-conversation/src/client/skeleton/ConversationSession.tsx'
 import { createConversationStore } from '@deepseek-ai/dsh-client-ui-conversation/src/client/stores.ts'
 import { zh as conversationZh } from '@deepseek-ai/dsh-client-ui-conversation/src/client/locales.ts'
-import { apply as localeApply, inject as localeInject } from '@deepseek-ai/dsh-client-locale/client'
+import * as localePlugin from '@deepseek-ai/dsh-client-locale/client'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-trajectory/client'
 import { apply as nodeApply } from '@deepseek-ai/dsh-client-ui-trajectory'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import type { TrajectoryTurnModel } from '../src/client/layout.ts'
 import { TrajectoryTimeline as LocalizedTrajectoryTimeline } from '../src/client/TrajectoryTimeline.tsx'
 import {
@@ -91,6 +92,7 @@ const NODES: LegacyConversationSlice['nodes'] = [
   },
   {
     kind: 'tool-result', seq: 3, time: 3_000, callId: 'c1', call: null, callTime: 2_200,
+    name: '', args: PartialArguments.EMPTY,
     content: [], isError: false, subCalls: [],
   },
   {
@@ -172,13 +174,13 @@ function standaloneDuration(): Pick<
 /** Empty sessions-list hook; breadcrumbs therefore fall back to the raw id. */
 function emptySessions() {
   const store = createSnapshotStore<SessionListState>(
-    { ids: [], byId: {}, phase: 'ready', subagentsByParent: {}, jobsBySession: {} })
+    { ids: [], byId: {}, phase: 'ready', projectionsBySession: {} })
   return bindSnapshotSelector(store)
 }
 
 function emptyWorkspaces() {
   const store = createSnapshotStore<WorkspaceSnapshot>({
-    items: [], archivedSessionIds: [], state: 'idle', phase: 'ready', error: null,
+    items: [], archivedSessionIds: [], pinnedSessionIds: [], state: 'idle', phase: 'ready', error: null,
   })
   return bindSnapshotSelector(store)
 }
@@ -214,7 +216,11 @@ function standaloneProps(
     draft: '', attachmentIds: [], draftRev: 0, phase: 'plain', occurrences: [], queue: [],
   })
   const inputActions: InputActions = {
+    insertQuote: () => false,
+    captureInsertion: () => ({ start: 0, end: 0, draftRev: 0 }),
+    insertText: () => false,
     setDraft: () => {},
+    persistDraft: () => {},
     addAttachments: () => false,
     removeAttachment: () => {},
     pruneAttachments: () => {},
@@ -230,16 +236,17 @@ function standaloneProps(
     ),
     useSessionRetainInfo: () => undefined,
     useWorkspaces: emptyWorkspaces(),
+    ...allowAllAccess,
     useConversation: bindSnapshotSelector(createSnapshotStore(conversationSnapshot(trajectory))),
     useInput: bindSnapshotSelector(input),
     inputActions,
     useProjection,
+    inspectCall: undefined,
     viewRequest: null,
     openView: () => {},
     completeViewRequest: () => {},
     // Image seats the outlet would bake: standalone renders omit the gallery.
     renderSlot: () => null,
-    SessionProvider: ({ children }) => <>{children}</>,
     loadImage: () => Promise.reject(new Error('standalone views load no images')),
     // The locale seat the outlet would inject for the declared namespace.
     t: tZh,
@@ -272,9 +279,11 @@ async function bench(snapshot = historySnapshot(NODES)) {
   const targetSources: ConversationTargetSources = {
     chat: createSnapshotStore<ChatSnapshot | undefined>(undefined),
     trajectory: trajectoryStore,
+    'tool-todo-history': createSnapshotStore<ConversationViewSnapshotMap['tool-todo-history'] | undefined>(undefined),
   }
   const binding: ConversationBinding = {
     snapshot: conversationStore,
+    openTurn: createSnapshotStore<number | undefined>(undefined),
     activate: () => {},
     target: target => targetSources[target],
   }
@@ -290,8 +299,8 @@ async function bench(snapshot = historySnapshot(NODES)) {
   // The locale plugin backs the locale-aware view tab label ('locale' in
   // inject); its settings scope needs a connection handle.
   ctx.provide('connection', { api: { settings: {} }, isLoopback: false } as never)
-  ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
-  await runtime.mount({ inject: [...localeInject], apply: localeApply })
+  ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
+  await runtime.mount(localePlugin)
   const provide = vi.spyOn(ctx.uiSession, 'provide')
   const feature = await runtime.mount({ inject: [...inject], apply })
   const sourceDescriptor = provide.mock.calls[0]?.[0]
@@ -308,10 +317,10 @@ function tabsOf(slots: SlotRegistry): ViewTab[] {
     .map(e => ({ id: e.options.id!, label: resolveSlotLabel(e.options.label) ?? e.options.id! }))
 }
 
-type ConvViewOwner = Pick<ConvViewProps, 'viewRequest' | 'openView' | 'completeViewRequest'>
+type ConvViewOwner = Pick<ConvViewProps, 'inspectCall' | 'viewRequest' | 'openView' | 'completeViewRequest'>
 
 function isConvViewOwner(owner: object): owner is ConvViewOwner {
-  return 'viewRequest' in owner
+  return 'inspectCall' in owner && 'viewRequest' in owner
     && 'openView' in owner && typeof owner.openView === 'function'
     && 'completeViewRequest' in owner && typeof owner.completeViewRequest === 'function'
 }
@@ -337,7 +346,11 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
     draft: '', attachmentIds: [], draftRev: 0, phase: 'plain', occurrences: [], queue: [],
   }))
   const inputActions: InputActions = {
+    insertQuote: () => false,
+    captureInsertion: () => ({ start: 0, end: 0, draftRev: 0 }),
+    insertText: () => false,
     setDraft: vi.fn(),
+    persistDraft: vi.fn(),
     addAttachments: vi.fn(() => false),
     removeAttachment: vi.fn(),
     pruneAttachments: vi.fn(),
@@ -355,6 +368,7 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
     useSessionStatus,
     useSessionRetainInfo: () => undefined,
     useWorkspaces,
+    ...allowAllAccess,
     useProjection,
     useInput,
     inputActions,
@@ -376,13 +390,16 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
         const trajectory = injected as TrajectoryViewInjected
         return {
           loadOlder: trajectory.loadOlder,
+          loadImage: trajectory.loadImage,
           setActualDuration: trajectory.setActualDuration,
           useDuration: bindSnapshotSelector(trajectory.hooks.duration),
           t: tZh,
         }
       })()
       : injected
-    const viewProps: ConvViewProps = { ...owner, ...standardProps }
+    const viewProps: ConvViewProps & Pick<PropsRenderSlots<'conversation.trajectory.images'>, 'renderSlot'> = {
+      ...owner, ...standardProps, renderSlot: () => null,
+    }
     return (
       <View
         {...viewProps}
@@ -394,6 +411,10 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
   return render(
     <>
       <ConversationSessionHeader
+        hideChrome={false}
+        useEntryPins={selector => selector([])}
+        useEntryActions={selector => selector(false)}
+        setPinned={vi.fn()}
         {...standardProps}
         SessionProvider={({ children }) => children}
         useStore={bindSnapshotSelector(conversation)}
@@ -409,8 +430,9 @@ function mount(fixture: Awaited<ReturnType<typeof bench>>) {
         useStore={bindSnapshotSelector(conversation)}
         actions={conversation.actions}
         renderSlot={renderSlot}
-        bindDraftMirror={() => () => {}}
+        bindDraftPersistence={() => () => {}}
         openView={conversation.actions.openView}
+        useInspectCall={selector => selector(undefined)}
       />
     </>,
   )
@@ -453,7 +475,7 @@ describe('plugin registration', () => {
 
     expect(resolveSource(binding)).toBe(source)
     expect(resolveSource(binding)).toBe(source)
-    const optionalTrajectory = b.trajectoryStore as unknown as {
+    const optionalTrajectory = b.trajectoryStore as {
       set(value: TrajectorySnapshot | undefined): void
     }
     optionalTrajectory.set(undefined)
@@ -582,6 +604,37 @@ describe('tab switching in ConversationRoot', () => {
     fireEvent.click(screen.getByRole('button', { name: '请求 #2 · 压缩' }))
     expect(screen.getByText('压缩 · 轮次之间')).toBeTruthy()
     expect(view.container.textContent).not.toContain('Turn null')
+  })
+
+  it('reports a streaming Assistant record and a running compaction as pending', async () => {
+    const nodes: LegacyConversationSlice['nodes'] = [
+      { kind: 'user', seq: 1, time: 1_000, content: [], source: null },
+    ]
+    const requests: RequestView[] = [
+      {
+        purpose: 'assistant', startSeq: 2, turn: 1, step: 1,
+        startedAt: 2_000, completedAt: null, status: 'running',
+      },
+      {
+        purpose: 'compaction', startSeq: 3, turn: 1, step: 0,
+        startedAt: 3_000, completedAt: null, status: 'running',
+      },
+    ]
+    const b = await bench(historySnapshot(nodes, {
+      requests,
+      partial: { turn: 1, step: 1, blocks: [{ kind: 'text', text: 'still streaming' }] },
+    }))
+    mount(b)
+    fireEvent.click(screen.getByRole('tab', { name: 'Trajectory' }))
+    const detail = () => screen.getByRole('complementary', { name: '事件详情' })
+
+    fireEvent.click(screen.getByRole('row', { name: /still streaming/ }))
+    expect(within(detail()).getByText('等待中')).toBeTruthy()
+    expect(within(detail()).queryByText('已完成')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '请求 #2 · 压缩' }))
+    expect(within(detail()).getByText('等待中')).toBeTruthy()
+    expect(within(detail()).queryByText('已压缩')).toBeNull()
   })
 
   it('activates only the selected standalone compaction section', async () => {
@@ -798,7 +851,7 @@ describe('timeline projection', () => {
       expect(span?.getAttribute('data-assistant-timing')).toBe('true')
       expect(span?.style.getPropertyValue('--trajectory-assistant-ttft')).toBe('25%')
 
-      fireEvent.mouseEnter(span as HTMLElement)
+      fireEvent.pointerEnter(span as HTMLElement)
       act(() => { vi.advanceTimersByTime(499) })
       expect(view.container.querySelector('[role="tooltip"]')).toBeNull()
       act(() => { vi.advanceTimersByTime(1) })
@@ -831,6 +884,9 @@ describe('timeline projection', () => {
     expect(view.container.querySelector('[data-timeline-hover-line]')).toBeTruthy()
     fireEvent.pointerEnter(boundary)
     expect(view.container.querySelector('[data-timeline-hover-line]')).toBeNull()
+    // Keyboard modality first: Tooltip suppresses focus arriving after a
+    // pointer interaction, and earlier cases in this file press pointers.
+    fireEvent.keyDown(boundary, { key: 'Tab' })
     fireEvent.focus(boundary)
     expect(screen.getByRole('tooltip').textContent)
       .toContain('Click to load earlier history')
@@ -1277,6 +1333,28 @@ describe('timeline projection', () => {
 })
 
 describe('TrajectoryView state', () => {
+  it.each([
+    { interrupted: true, status: '失败' },
+    { interrupted: false, status: '已完成' },
+  ])('uses the settled response status when the Step start is unloaded: $status', ({ interrupted, status }) => {
+    const nodes: LegacyConversationSlice['nodes'] = [{
+      kind: 'assistant', seq: 10, time: 10_000, turn: 2, step: 3,
+      blocks: [{ kind: 'text', text: 'loaded response' }],
+      ...(interrupted ? { interrupted: true } : {}),
+    }]
+    render(<TrajectoryView
+      {...standaloneProps(nodes)}
+      {...standaloneHistory(historySnapshot(nodes))}
+      {...standaloneDuration()}
+    />)
+    fireEvent.click(screen.getByRole('row', { name: /loaded response/ }))
+    expect(within(screen.getByRole('tabpanel')).getByText(status)).toBeTruthy()
+    fireEvent.click(within(screen.getByRole('table')).getByRole('button', { name: '请求 #1' }))
+    expect(within(screen.getByRole('tabpanel')).getByText(status)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '助手消息' }))
+    expect(within(screen.getByRole('tabpanel')).getByText(status)).toBeTruthy()
+  })
+
   it('reveals resident history one bounded page at a time', async () => {
     const nodes: LegacyConversationSlice['nodes'] = Array.from({ length: 5_000 }, (_, index) => ({
       kind: 'user' as const,
@@ -1358,6 +1436,7 @@ describe('TrajectoryView state', () => {
       blocks: [{ kind: 'tool-call', callId: 'boundary-call', name: 'bash', argsRaw: '{}' }],
     }, {
       kind: 'tool-result', seq: 3, time: 3, callId: 'boundary-call',
+      name: 'bash', args: PartialArguments.fromText('{}'),
       call: { name: 'bash', argsRaw: '{}' }, callTime: 2,
       content: [], isError: false, subCalls: [],
     }, ...Array.from({ length: 39 }, (_, index) => ({
@@ -1412,12 +1491,13 @@ describe('TrajectoryView state', () => {
       seq: 3,
       time: 3,
       callId: 'hidden-root',
+      name: 'run_code', args: PartialArguments.fromText('{}'),
       call: { name: 'run_code', argsRaw: '{}' },
       callTime: 2,
       content: [],
       isError: false,
       subCalls: [{
-        callId: 'hidden-child', parentCallId: 'hidden-root', name: 'bash', argsRaw: '{}',
+        phase: 'start' as const, args: PartialArguments.fromText('{}'), callId: 'hidden-child', parentCallId: 'hidden-root', name: 'bash', argsRaw: '{}',
         turn: 1, step: 1, time: 3, subCalls: [],
       }],
     }, 'hidden-child'],
@@ -1426,6 +1506,7 @@ describe('TrajectoryView state', () => {
       { kind: 'user', seq: 1, time: 1, content: [], source: null },
       {
         kind: 'tool-result', seq: 2, time: 2, callId: 'unrelated', call: null, callTime: null,
+        name: '', args: PartialArguments.EMPTY,
         content: [], isError: false, subCalls: [],
       },
       target,

@@ -7,10 +7,12 @@ import type {
   SessionReference,
   SessionRetainInfo,
   SessionSnapshot,
+  SessionSummary,
   UseProjection,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type { AccessEffect, RemoteEndpoint } from '@deepseek-ai/dsh-api-remote-access/client'
 import { notifySubscribers } from '@deepseek-ai/dsh-client-store'
 import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
 import { standardHookPropName } from '@deepseek-ai/dsh-client-ui-slots'
@@ -157,6 +159,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     useSessions: UseSessions
     useSessionStatus: UseSessionStatus
     useSessionRetainInfo: UseSessionRetainInfo
+    /** Whether the current Peer may call `action` on one Session resource. */
+    useSessionAccess: (sessionId: SessionId, action: RemoteEndpoint) => boolean
   }
 
   interface SessionStandardProps {
@@ -166,6 +170,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     sessionId: SessionId
     /** Host-computed projection values addressed by projection key. */
     useProjection: UseProjection
+    /** Whether the current Peer may call `action` on this Session resource. */
+    useAccess: (action: RemoteEndpoint) => boolean
   }
 
   interface SessionMaybeStandardProps {
@@ -175,6 +181,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     sessionId: SessionId | undefined
     /** Host-computed projection values; every key is absent without a Session. */
     useProjection: UseProjection
+    /** The bound Session's access answer; `undefined` without a Session, which callers treat as not allowed. */
+    useAccess: (action: RemoteEndpoint) => boolean | undefined
   }
 }
 
@@ -353,6 +361,24 @@ export class UiSession extends Service {
   }
 
   /**
+   * Keep `callback`'s effects installed while the current Peer may call
+   * `action` on one Session resource, with the semantics of
+   * `ctx.remoteAccess.whenAccess`: `useSessionAccess` answers the same
+   * question during render.
+   * @param sessionId - the Session resource the guarded effects depend on.
+   * @param action - endpoint action the guarded effects depend on.
+   * @param callback - creates one disposer or an iterable of disposers.
+   * @returns idempotent disposer owned by the caller's Cordis fiber.
+   */
+  whenAccess(sessionId: SessionId, action: RemoteEndpoint, callback: () => AccessEffect): () => void {
+    // `ctx.get` traces the service to the caller's Context, which then owns the controller.
+    const access = this.ctx.get('remoteAccess')
+    /* v8 ignore next -- this plugin injects remoteAccess, so the service is active while uiSession is reachable. */
+    if (access === undefined) throw new Error('ui-session: whenAccess requires the remoteAccess service')
+    return access.whenResourceAccess('session', sessionId, action, callback)
+  }
+
+  /**
    * Register one Session-scoped standard-source contribution.
    * @param descriptor - static member roster and per-binding resolver.
    * @returns disposer owned by the caller's Cordis fiber.
@@ -492,13 +518,15 @@ export class UiSession extends Service {
   private reconcileStatus(): void {
     const list = this.sessions.list.getSnapshot()
     const present = new Set(Object.keys(list.byId) as SessionId[])
-    for (const id of present) {
-      const row = list.byId[id]
-      if (row === undefined) continue
+    // Subagent catalog rows and retained subagent fallback rows do not establish Host running state.
+    for (const id of list.ids) {
+      const row = list.byId[id] as SessionSummary
       const previous = this.running.get(id)
       if (previous === undefined) this.running.set(id, row.running)
       else if (previous !== row.running) this.observeRunning(id, row.running)
-      if ((row.retainedBy.mainView ?? 0) > 0) this.completionUnread.delete(id)
+    }
+    for (const id of present) {
+      if (this.isMain(id)) this.completionUnread.delete(id)
     }
     if (list.phase === 'ready') {
       for (const id of this.running.keys()) {
@@ -657,8 +685,8 @@ function claimStandardProp(kind: StandardMemberKind, name: string, finalProps: S
   finalProps.add(propName)
 }
 
-/** Required Controller and renderer services. */
-export const inject = ['sessions', 'slots', 'remote']
+/** Required Controller, renderer, Remote, and access services. */
+export const inject = ['sessions', 'slots', 'remote', 'remoteAccess']
 
 /**
  * Install the Session root source and scoped adapter.
@@ -673,9 +701,18 @@ export function apply(ctx: Context): void {
     },
     keyedHooks: {
       sessionRetainInfo: key => ctx.sessions.retainInfo(key as SessionId),
+      sessionAccess: (sessionId, action) => action === undefined
+        ? undefined
+        : ctx.remoteAccess.source('session', sessionId, action),
     },
   } satisfies RootStandardSourceContribution)
   ctx.slots.installScope('session', service.adapter)
+  service.provide({
+    keyedHooks: ['access'],
+    resolve: binding => ({
+      keyedHooks: { access: action => ctx.remoteAccess.source('session', binding.sessionId, action) },
+    }),
+  })
 }
 
 function sameSessionStatus(left: SessionStatusSnapshot, right: SessionStatusSnapshot): boolean {

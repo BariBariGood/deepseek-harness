@@ -43,27 +43,16 @@ export const Config: z<Config> = z.object({
 })
 
 const DESCRIPTION_HEAD =
-  'Record and update a structured task list for the current work. Send the ENTIRE '
-  + 'list every call — it REPLACES the previous list (there are no partial updates, '
-  + 'no per-item edits). Use it to plan multi-step work and show progress: add one '
-  + 'todo per concrete step before you start. '
+  'Record and update a task list to plan multi-step work and show progress; skip it for trivial '
+  + 'single-step tasks. Add one todo per concrete step before you start. '
 
 const DESCRIPTION_PARALLEL =
-  'Mark every todo being actively worked '
-  + 'on `in_progress` — several at once when work genuinely runs in parallel (e.g. '
-  + 'concurrent subagents or background commands), one for sequential work; while '
-  + 'work remains, at least one task should be `in_progress`. '
+  'While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. '
 
 const DESCRIPTION_SINGLE =
-  'Keep AT MOST ONE todo `in_progress` at a '
-  + 'time; while work remains, exactly one active task should be `in_progress`. '
+  'While work remains, keep exactly one todo `in_progress`. '
 
-const DESCRIPTION_TAIL =
-  'Mark a todo '
-  + '`completed` the moment it is done (do not batch completions), and allow no '
-  + '`in_progress` item only once all work is complete. Skip the list for trivial '
-  + 'single-step tasks. Statuses: `pending` (not started), `in_progress` (being '
-  + 'worked on now), `completed` (finished).'
+const DESCRIPTION_TAIL = 'Mark each todo `completed` as soon as it is done.'
 
 /**
  * The model-facing description for one activation. The active-status clause is the only part that
@@ -124,14 +113,15 @@ const todosProjectionSchema: ZodType<TodoItem[] | null> = zod.union([
  * `ctx.sessionProjections`.
  * @param ctx - registrant context carrying the tool and session-projection registries.
  * @param config - deployment's explicit todo policy.
+ * @returns when the plugin is ready.
  */
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   const allowParallel = config.allowParallelInProgress
   // Standing-plan fold: latest whole todo/write list, cleared by the next
   // turn/start (turn/end keeps the finished checklist visible); null before the
   // first write or after a later turn begins; every other event returns the
   // same state reference.
-  ctx.sessionProjections.register<'todos', TodoItem[] | null>({
+  await ctx.sessionProjections.register<'todos', TodoItem[] | null>({
     key: 'todos',
     stateSchema: todosProjectionSchema,
     init: () => null,
@@ -140,7 +130,7 @@ export function apply(ctx: Context, config: Config): void {
       if (event.type === 'turn/start') return null
       return state
     },
-    wire: { viewSchema: todosProjectionSchema, view: state => state },
+    wire: { viewSchema: todosProjectionSchema, view: state => state, summary: false },
     stateVersion: 2,
   })
   ctx.tools.register(defineTool({

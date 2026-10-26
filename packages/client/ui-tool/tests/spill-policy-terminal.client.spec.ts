@@ -1,16 +1,22 @@
 /** Producer-to-UI regression for shell results bounded by the real spill policy. */
+import { executeModelToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolResultNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import type { PtcRunRequest, PtcRunSpec, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
+import { estimateContent } from '@deepseek-ai/dsh-token-meter/estimate'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SpillLocator, SpillStore, type SaveTextSpill, type SpillRef } from '@deepseek-ai/dsh-spill'
 import * as SpillPolicy from '@deepseek-ai/dsh-spill-policy'
 import { formatSpillNotice } from '@deepseek-ai/dsh-spill-policy/notice'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import { describe, expect, it } from 'vitest'
 import { isSpilledShellCall, terminalCardModel } from '../src/client/tool/models/terminal-card-model.ts'
 
@@ -34,13 +40,15 @@ class MemorySpillStore extends SpillStore {
 
 const shellArgs = { command: 'fixture-output', description: 'Return shell output fixture' }
 
-async function executeShell(text: string, nested: boolean, name = 'bash', maxInlineBytes = 256) {
+async function executeShell(text: string, nested: boolean, name = 'bash', maxInlineTokens = 256) {
   const ctx = new Context()
   try {
     await ctx.plugin(SystemPrompt)
-    await ctx.plugin(ToolRuntime, { mode: 'both' })
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin((nested ? 'ptc' : 'native') === 'ptc' ? PtcToolExecutor : NativeToolExecutor)
+    ctx.provide('workingDirectory', { ensure: async () => process.cwd() })
     await ctx.plugin(MemorySpillStore)
-    await ctx.plugin(SpillPolicy, { maxInlineBytes })
+    await ctx.plugin(SpillPolicy, { maxInlineTokens })
     if (nested) {
       // The real registry and spill policy own nested output; evaluator execution has its own process suite.
       class BindingRuntime extends PtcRuntime {
@@ -69,10 +77,10 @@ async function executeShell(text: string, nested: boolean, name = 'bash', maxInl
       async execute() { return [{ type: 'text', text }] },
     })))
     const session = Session.create(SessionId('spill-terminal'))
-    // The tool pipeline reads only the owner session; no agent loop runs here.
-    const agent = { session } as Agent
+    // Nested PTC registers retained-environment cleanup on the owning context.
+    const agent = { ctx, session } as Agent
     const callId = ToolCallId('shell-call')
-    const result = await ctx.tools.execute({
+    const result = await executeModelToolFixture(ctx, {
       callId,
       agent,
       signal: new AbortController().signal,
@@ -94,6 +102,7 @@ async function executeShell(text: string, nested: boolean, name = 'bash', maxInl
       block = {
         kind: 'tool-result', seq: event.seq, time: event.time, callTime: null,
         callId: event.data.subCallId, parentCallId: event.data.parentCallId,
+        name: event.data.name, args: PartialArguments.fromText(JSON.stringify(event.data.arguments)),
         call: { name: event.data.name, argsRaw: JSON.stringify(event.data.arguments) },
         content: event.data.content, isError: event.data.isError, subCalls: [],
       }
@@ -101,6 +110,7 @@ async function executeShell(text: string, nested: boolean, name = 'bash', maxInl
       expect(result.value).toEqual([{ type: 'text', text }])
       block = {
         kind: 'tool-result', seq: 1, time: 1, callTime: null, callId,
+        name, args: PartialArguments.fromText(JSON.stringify(shellArgs)),
         call: { name, argsRaw: JSON.stringify(shellArgs) },
         content: result.content, isError: result.isError, subCalls: [],
       }
@@ -136,7 +146,7 @@ describe.each([
       expect(block.content).toHaveLength(1)
       const preview = block.content[0]!
       if (preview.type !== 'text') throw new Error('expected a plain-text spill preview')
-      expect(Buffer.byteLength(preview.text, 'utf8')).toBeLessThanOrEqual(256)
+      expect(estimateContent(block.content)).toBeLessThanOrEqual(256)
       expect(preview.text).toContain('HEAD')
       if (marker !== '') expect(preview.text).toContain(marker)
       expect(terminalCardModel(block)).toBeNull()
@@ -146,7 +156,7 @@ describe.each([
     it('keeps a notice-only result generic when no preview fits', async () => {
       const original = '雪'.repeat(1_000) + '\n[exit code: 9]'
       const notice = formatSpillNotice({ kind: 'exact', count: Buffer.byteLength(original, 'utf8') }, spillReference)
-      const { block, saves } = await executeShell(original, nested, name, Buffer.byteLength(notice, 'utf8'))
+      const { block, saves } = await executeShell(original, nested, name, estimateContent([{ type: 'text', text: notice }]))
       expect(block.content).toEqual([{ type: 'text', text: notice }])
       expect(saves).toHaveLength(1)
       expect(saves[0]!.bytes).toEqual(Buffer.from(original, 'utf8'))

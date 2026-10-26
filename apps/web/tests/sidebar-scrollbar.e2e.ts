@@ -71,17 +71,22 @@ function measureList(page: Page): Promise<ListMetrics> {
       probe.remove()
       return value
     }
-    // Computed pseudo style folds in hover even at rest, so inspect the cascade.
+    // Computed pseudo style folds in hover even at rest, so inspect active CSS groups.
     // Cross-origin sheets may throw and cannot contain the app-owned rule.
+    const styleRules = (rules: CSSRuleList): CSSStyleRule[] => [...rules].flatMap((rule) => {
+      if (rule instanceof CSSStyleRule) return [rule]
+      if (rule instanceof CSSMediaRule && !matchMedia(rule.conditionText).matches) return []
+      if (rule instanceof CSSSupportsRule && !CSS.supports(rule.conditionText)) return []
+      return rule instanceof CSSGroupingRule ? styleRules(rule.cssRules) : []
+    })
     const hoverRules = [...document.styleSheets]
       .flatMap((sheet) => {
         try {
-          return [...sheet.cssRules]
+          return styleRules(sheet.cssRules)
         } catch {
           return []
         }
       })
-      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
       .filter(rule => rule.selectorText === '::-webkit-scrollbar-thumb:hover')
       .map(rule => rule.style.getPropertyValue('background-color'))
     const style = getComputedStyle(list)
@@ -376,9 +381,9 @@ describe('web e2e: sidebar session list scrollbar (reserved gutter / themed thum
     // the hover token included.
     expect(light.standardWidth).toBe('auto')
     expect(light.standardColor).toBe('auto')
-    // The pseudo-element path is the one in force: the sheet's own 8px sizing
+    // The pseudo-element path is the one in force: the sheet's own 5px sizing
     // and transparent track reached a container it never names.
-    expect(light.width).toBe('8px')
+    expect(light.width).toBe('5px')
     expect(light.track).toBe('rgba(0, 0, 0, 0)')
     // The resting and the hover rule each read the rebindable indirection, and
     // the two resolve to DIFFERENT colours on this list: the l1 pair arrived

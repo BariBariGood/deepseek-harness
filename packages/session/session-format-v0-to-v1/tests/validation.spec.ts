@@ -205,8 +205,8 @@ function invalidLeafMutations(
 function replaceAtPath(value: SessionFormatJsonValue, path: string, replacement: SessionFormatJsonValue): SessionFormatJsonValue {
   const copy = structuredClone(value)
   const keys = path.split('.')
-  let current = copy as unknown as Record<string, SessionFormatJsonValue>
-  for (const key of keys.slice(0, -1)) current = current[key] as unknown as Record<string, SessionFormatJsonValue>
+  let current = copy as Record<string, SessionFormatJsonValue>
+  for (const key of keys.slice(0, -1)) current = current[key] as Record<string, SessionFormatJsonValue>
   current[keys.at(-1) as string] = replacement
   return copy
 }
@@ -784,6 +784,31 @@ describe('released event and payload inventory', () => {
     ]
     for (const [index, [type, data]] of cases.entries()) {
       expect(() => { assertPayload(type, data) }, `${type}-${index}`).toThrow()
+    }
+  })
+
+  it('pins the released-log instant profile at its bounds and against every non-canonical spelling', () => {
+    // This migration reads released logs, so the accepted set is a compatibility
+    // promise: the four-digit-year bounds stay readable and each spelling that a
+    // regular expression alone would admit stays refused.
+    for (const acceptedAt of ['0001-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z']) {
+      expect(
+        () => { assertPayload('schedule/change', { version: 1, operation: 'dispatch', id: 'x', acceptedAt }) },
+        acceptedAt,
+      ).not.toThrow()
+    }
+    for (const acceptedAt of [
+      '0000-01-01T00:00:00.000Z',
+      '2026-02-30T00:00:00.000Z',
+      '2026-08-31T00:00:00.0000Z',
+      '2026-08-31T00:00:00.000+00:00',
+      ' 2026-08-31T00:00:00.000Z',
+      '2026-08-31T00:00:00.000Z ',
+    ]) {
+      expect(
+        () => { assertPayload('schedule/change', { version: 1, operation: 'dispatch', id: 'x', acceptedAt }) },
+        acceptedAt,
+      ).toThrow(/must be a canonical UTC instant/)
     }
   })
 })

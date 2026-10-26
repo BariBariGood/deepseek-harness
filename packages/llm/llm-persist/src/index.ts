@@ -136,14 +136,13 @@ function cancellableDelay(delayMs: number, signal: AbortSignal): Promise<boolean
 /**
  * Install provider-pinned unbounded recovery behind the bounded retry policy.
  * @param ctx - plugin context that owns the listener and active waits.
- * @param config - providers, eligible codes, and backoff; a settings section
- *  under `llm-persist:` overrides it live.
+ * @param config - providers, eligible codes, and backoff; the `llm-persist:`
+ *  profile patch section supplies it.
  * @param internals - non-serializable deterministic hooks for tests.
  */
 export function apply(ctx: Context, config: Config = {}, internals: RetryInternals = {}): void {
   validateConfig(config)
   const random = internals.random ?? Math.random
-  let current: () => Config = () => config
   const lifetime = new AbortController()
   const active = new Set<Promise<RequestErrorAction>>()
 
@@ -189,7 +188,7 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
     { agent, turn, step, provider, failure, signal }: Parameters<Events['agent/request-error']>[0],
     next: () => Promise<RequestErrorAction>,
   ): Promise<RequestErrorAction> {
-    const { providers, codes, backoff: backoffConfig } = resolved(current())
+    const { providers, codes, backoff: backoffConfig } = resolved(config)
     if (!providers.includes(provider)) return next()
     if (!codes.includes(failure.code)) return next()
     // A waterfall may have captured this callback before its registration was
@@ -236,11 +235,6 @@ export function apply(ctx: Context, config: Config = {}, internals: RetryInterna
   }, 'llm-persist: abort and drain active recovery')
 
   ctx.inject(['settings'], (sctx) => {
-    sctx.settings.installSection(ctx, 'llm-persist', Config, config, {
-      setSource: (source: () => Config) => {
-        current = source
-      },
-      onChange: () => {},
-    })
+    sctx.effect(() => sctx.settings.configure({ auto: false }, ctx.fiber))
   })
 }

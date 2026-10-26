@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -14,7 +15,7 @@ import type {
   TerminalSessionStatus,
   TerminalSignal,
 } from '@deepseek-ai/dsh-terminal'
-import { unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
+import { unsupportedModel, unsupportedInbox } from '@deepseek-ai/dsh-agent-loop-testkit'
 
 const agentScopeDisposers = new WeakMap<Agent, () => Promise<void>>()
 const ptyServiceDisposers = new WeakMap<Context, () => Promise<void>>()
@@ -27,6 +28,7 @@ function stubAgent(ctx: Context, rawId: string): Agent {
     id,
     options: {},
     session,
+    model: unsupportedModel(),
     inbox: unsupportedInbox(),
     status: 'idle',
     ctx: scopeFiber.ctx,
@@ -120,6 +122,7 @@ function backend(type = 'stub') {
 
 async function harness() {
   const ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
   const fiber = await ctx.plugin(TerminalSessionService)
   ptyServiceDisposers.set(ctx, async () => { await fiber.dispose() })
@@ -350,7 +353,7 @@ describe('TerminalSessionService ownership and lifecycle', () => {
       .then(() => { disposalSettled = true })
     await new Promise(resolve => setTimeout(resolve, 0))
     const signalAbortedBeforeRelease = backendSignal?.aborted ?? false
-    const signalReasonBeforeRelease = backendSignal?.reason as unknown
+    const signalReasonBeforeRelease: unknown = backendSignal?.reason
     const disposalSettledBeforeRelease = disposalSettled
     gate.resolve(session)
 
@@ -423,7 +426,7 @@ describe('TerminalSessionService ownership and lifecycle', () => {
       (error: unknown) => error,
     )
     expect(disposalError).toMatchObject({ message: 'failed to clean up PTY lifecycle' })
-    const rollbackError = (disposalError as AggregateError).errors[0] as unknown
+    const rollbackError: unknown = (disposalError as AggregateError).errors[0]
     const cleanupErrors = (rollbackError as AggregateError).errors as unknown[]
     expect(cleanupErrors).toEqual([cleanupFailure])
   })

@@ -1,3 +1,5 @@
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -31,6 +33,7 @@ async function setup(allowParallelInProgress: boolean): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(tool, { allowParallelInProgress })
   return ctx
@@ -39,7 +42,7 @@ async function setup(allowParallelInProgress: boolean): Promise<Context> {
 let callCounter = 0
 function callTodo(ctx: Context, args: unknown, over: { agent?: Agent | undefined } = {}) {
   const agent = 'agent' in over ? over.agent : agentWithSession()
-  return ctx.tools.execute({
+  return executeToolFixture(ctx, {
     signal: testToolSignal,
     callId: ToolCallId(`call-${++callCounter}`),
     name: 'todo_write',
@@ -177,12 +180,12 @@ describe('dsh-tool-todo', () => {
     it('instructs the model to keep at most one active, while true instructs parallel', async () => {
       const single = await setup(false)
       const singleDesc = single.tools.schemas().find(s => s.name === 'todo_write')!.description
-      expect(singleDesc).toContain('Keep AT MOST ONE todo `in_progress`')
-      expect(singleDesc).not.toContain('several at once')
+      expect(singleDesc).toContain('keep exactly one todo `in_progress`')
+      expect(singleDesc).not.toContain('several only')
 
       const parallelDesc = (await setup(true)).tools.schemas().find(s => s.name === 'todo_write')!.description
-      expect(parallelDesc).toContain('several at once when work genuinely runs in parallel')
-      expect(parallelDesc).not.toContain('AT MOST ONE')
+      expect(parallelDesc).toContain('several only when work runs in parallel')
+      expect(parallelDesc).not.toContain('exactly one')
     })
   })
 
@@ -215,6 +218,7 @@ describe('dsh-tool-todo', () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(SessionProjectionRegistry)
     const fiber = await ctx.plugin(tool, { allowParallelInProgress: true })
     expect(ctx.tools.schemas().some(s => s.name === 'todo_write')).toBe(true)

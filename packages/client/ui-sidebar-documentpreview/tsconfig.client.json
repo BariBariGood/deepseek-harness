@@ -24,7 +24,7 @@
       "path": "../../core/session"
     },
     {
-      "path": "../locale"
+      "path": "../locale/tsconfig.client.json"
     },
     {
       "path": "../resources"
@@ -64,6 +64,12 @@
     },
     {
       "path": "../../document/office-to-pdf"
+    },
+    {
+      "path": "../ui-settings/tsconfig.client.json"
+    },
+    {
+      "path": "../ui-file-drag"
     }
   ]
 }

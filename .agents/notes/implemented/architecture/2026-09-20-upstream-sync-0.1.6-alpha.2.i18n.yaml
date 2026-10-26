@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-09-20-upstream-sync-0.1.6-alpha.2.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-20-upstream-sync-0.1.6-alpha.2.md
-2026-09-20-upstream-sync-0.1.6-alpha.2.md: 9286cd3ddf59d6ca2ed24fdfdf8f2408feb27d3d
-2026-09-20-upstream-sync-0.1.6-alpha.2.zh.md: a15f431eb4035077338b7d9dbb01cb668a57d17f
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary:
+  en: 3c8a874452bbc677
+  zh: bde8abbe6c2d0049
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary/problem:
+  en: 299c671c0c2ad170
+  zh: 20eab003a51d6114
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary/decision:
+  en: a6a6921cecd036cc
+  zh: 3324f848a3046878
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary/testing:
+  en: e114fd33bc1b415a
+  zh: a71d72ad34d0e393
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary/consequences:
+  en: fe1bc002d84139a4
+  zh: 6d5454194e685816
+/agent-note-upstream-sync-to-dsh-0-1-6-alpha-2-keeps-the-telegram-origin-as-a-field-level-fork-vocabulary/alternatives-considered:
+  en: 8242eb641cd18a9b
+  zh: 63493ace3b4b3791

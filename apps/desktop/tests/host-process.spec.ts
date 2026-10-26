@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DesktopHostProcess, DesktopHostUncleanExitError } from '../src/host-process.ts'
+import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError, QUIT_INSPECTION_DEADLINE_MS } from '../src/host-process.ts'
 
 const roots: string[] = []
 const hosts: DesktopHostProcess[] = []
@@ -30,8 +30,29 @@ server.listen(0, '127.0.0.1', () => {
   process.send({ type: 'ready', url: 'http://127.0.0.1:' + server.address().port + '/?token=fixture' })
 })
 process.on('message', message => {
+  if (message.type === 'file-drag-cancel') {
+    process.send({ type: 'file-drag-resource', requestId: message.requestId, resource: null })
+    return
+  }
+  if (message.type === 'file-drag-resource') {
+    if (message.address === 'pending') return
+    if (message.address === 'invalid') {
+      process.send({ type: 'file-drag-resource', requestId: message.requestId, resource: { path: '/invalid', sha256: 'bad', size: -1 } })
+      return
+    }
+    process.send({ type: 'file-drag-resource', requestId: message.requestId,
+      resource: message.address === 'remote' ? null : { path: '/authorized/report.pdf', sha256: 'a'.repeat(64), size: 42 },
+      ...(message.address === 'denied' ? { error: 'File read denied' } : {}) })
+    return
+  }
   if (message.type === 'update-tasks') {
     process.send({ type: 'update-tasks', requestId: message.requestId, active: message.action === 'lock' })
+    return
+  }
+  if (message.type === 'quit-inspection') {
+    // Ids divisible by three never answer; the others report scheduled work for odd ids.
+    if (message.requestId % 3 === 0) return
+    process.send({ type: 'quit-inspection', requestId: message.requestId, activeTasks: false, scheduledTasks: message.requestId % 2 === 1 })
     return
   }
   if (message.type !== 'shutdown') return
@@ -67,6 +88,32 @@ afterEach(async () => {
 })
 
 describe('desktop host process', () => {
+  it('correlates authorized file resources and rejects Host denial over private IPC', async () => {
+    const host = hostProcess(projectWithHost())
+    await host.start()
+    expect(await Promise.all([host.resolveDragResource('local'), host.resolveDragResource('remote')]))
+      .toEqual([{ path: '/authorized/report.pdf', sha256: 'a'.repeat(64), size: 42 }, null])
+    await expect(host.resolveDragResource('denied')).rejects.toThrow('File read denied')
+    await host.stop(true)
+    await expect(host.resolveDragResource('local')).rejects.toThrow('file drag: Host is unavailable')
+  })
+
+  it('cancels a pending resource request without invalidating later Host requests', async () => {
+    const host = hostProcess(projectWithHost())
+    await host.start()
+    const abort = new AbortController()
+    const pending = host.resolveDragResource('pending', abort.signal)
+    const rejected = expect(pending).rejects.toThrow('cancelled')
+    abort.abort(new Error('cancelled'))
+    await rejected
+    await expect(host.resolveDragResource('local')).resolves.toMatchObject({ path: '/authorized/report.pdf' })
+  })
+
+  it('rejects malformed file authorization responses and terminates the Host', async () => {
+    const host = hostProcess(projectWithHost())
+    await host.start()
+    await expect(host.resolveDragResource('invalid')).rejects.toThrow('invalid IPC event')
+  })
   it('correlates task inspections and admission changes over private IPC', async () => {
     const host = hostProcess(projectWithHost())
     await expect(host.updateTasks('inspect')).rejects.toThrow('Host is unavailable')
@@ -76,6 +123,19 @@ describe('desktop host process', () => {
     await host.stop(true)
     await expect(host.updateTasks('inspect')).rejects.toThrow('Host is unavailable')
   })
+
+  it('correlates quit inspections with task requests and fails an unanswered one at its own deadline', async () => {
+    const host = hostProcess(projectWithHost())
+    await expect(host.inspectQuit()).rejects.toThrow('desktop quit: Host is unavailable')
+    await host.start()
+    // Request ids 1 and 2: the fixture answers by id parity, so both control kinds share one id space.
+    expect(await Promise.all([host.inspectQuit(), host.updateTasks('inspect')]))
+      .toEqual([{ activeTasks: false, scheduledTasks: true }, false])
+    const started = Date.now()
+    await expect(host.inspectQuit()).rejects.toThrow('desktop quit: inspection timed out')
+    expect(Date.now() - started).toBeGreaterThanOrEqual(QUIT_INSPECTION_DEADLINE_MS - 50)
+    expect(await host.inspectQuit()).toEqual({ activeTasks: false, scheduledTasks: false })
+  }, 15_000)
 
   it.each([
     'process.exit(17)',
@@ -110,15 +170,15 @@ describe('desktop host process', () => {
     expect(failure).not.toHaveBeenCalled()
   })
 
-  it('passes external dependencies and runtime profile resolution to the Host', async () => {
+  it('passes external dependencies and package-manager paths to the Host', async () => {
     const runtime = projectWithHost(HTTP_HOST.replace('runtime: process.argv[2]',
-      'pnpm: process.argv[6], nodeBin: process.argv[7], primaryRuntime: process.argv[4], profileResolution: process.argv[5], runtime: process.argv[2]'))
+      'pnpm: process.argv[5], nodeBin: process.argv[6], primaryRuntime: process.argv[4], runtime: process.argv[2]'))
     const primaryRuntime = join(runtime, 'external-primary-runtime')
     const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env,
-      undefined, primaryRuntime, 'runtime', { pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
+      undefined, primaryRuntime, { pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
     hosts.push(host)
     const { url } = await host.start()
-    expect(await (await fetch(url)).json()).toMatchObject({ primaryRuntime, profileResolution: 'runtime', pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
+    expect(await (await fetch(url)).json()).toMatchObject({ primaryRuntime, pnpm: join(runtime, 'pnpm.mjs'), nodeBin: join(runtime, 'bin') })
   })
 
   it('reports a fatal event after readiness once', async () => {
@@ -176,9 +236,46 @@ describe('desktop host process', () => {
   it.each([
     ["process.send({ type: 'fatal', message: 'startup failed' }); process.disconnect()", 'startup failed'],
     ["process.send({ type: 'ready', url: 4 })", 'invalid IPC event'],
+    ["process.send({ type: 'fatal', message: 'startup failed', diagnostic: 42 })", 'invalid IPC event'],
     ['process.exit(0)', 'host stopped'],
   ])('rejects startup when the child fails before readiness: %s', async (source, message) => {
     const host = hostProcess(projectWithHost(source))
     await expect(host.start()).rejects.toThrow(message)
   })
+
+  it('keeps the Host\'s inspected error separate from the message it reports', async () => {
+    const diagnostic = "Error: startup failed\\n    at boot (lib/index.js:3:9) {\\n  code: 'ENOENT',\\n  path: '/profile/cordis.yml'\\n}"
+    const failures: Error[] = []
+    const host = hostProcess(projectWithHost(
+      `process.send({ type: 'fatal', message: 'startup failed', diagnostic: ${JSON.stringify(diagnostic)} }); process.disconnect()`,
+    ), undefined, (error) => { failures.push(error) })
+    await expect(host.start()).rejects.toThrow('startup failed')
+    const [failure] = failures
+    expect(failure).toBeInstanceOf(DesktopHostFatalError)
+    expect((failure as DesktopHostFatalError).diagnostic).toBe(diagnostic)
+    expect(Object.keys(failure!)).not.toContain('diagnostic')
+  })
+})
+
+it.each([null, 'stable-account'])('carries Platform identity %s over private IPC and clears credentials on shutdown', async (userId) => {
+  const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'", "process.send({ type: 'platform-session', session: { origin: 'https://platform.deepseek.com', userId: " + JSON.stringify(userId) + ", token: 'fixture-secret', embeddedPageDist: 'feat/test' } }); process.send({ type: 'ready'"))
+  const changed = vi.fn()
+  const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, undefined, undefined, undefined, changed)
+  hosts.push(host)
+  await host.start()
+  expect(changed).toHaveBeenCalledWith({ origin: 'https://platform.deepseek.com', userId, token: 'fixture-secret', embeddedPageDist: 'feat/test' })
+  await host.stop()
+  expect(changed).toHaveBeenLastCalledWith(null)
+})
+
+it.each([undefined, '', 7])('rejects malformed Platform account identity %s on private IPC', async (userId) => {
+  const session = { origin: 'https://platform.deepseek.com', token: 'fixture-secret', userId }
+  const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",
+    `process.send({ type: 'platform-session', session: ${JSON.stringify(session)} }); process.send({ type: 'ready'`))
+  const changed = vi.fn()
+  const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, undefined, undefined, undefined, changed)
+  hosts.push(host)
+  await expect(host.start()).rejects.toThrow('invalid IPC event')
+  expect(changed.mock.calls).toEqual([[null]])
+  await host.stop()
 })

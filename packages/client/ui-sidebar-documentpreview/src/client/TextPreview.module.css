@@ -28,38 +28,8 @@
   border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
 
-/* The path is never ellipsized. Its text sits at the left while it fits: the
-   auto margin takes the free space. Once it is wider than the box, the auto
-   margin is zero and `flex-end` holds the name at the right edge, so the
-   directories run off the left and the box clips them there, faded by the
-   mask while `data-textpreview-path-clipped` is set. The margin plus the row's
-   gap put the text 16px clear of the first control. */
 .path {
-  display: flex;
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  min-width: 0;
   margin-right: 12px;
-  overflow: hidden;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.path[data-textpreview-path-clipped] {
-  mask-image: linear-gradient(to right, transparent, black 28px);
-}
-
-.pathText {
-  flex: none;
-  margin-right: auto;
-}
-
-.pathDirectory {
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.pathName {
-  color: var(--dsw-alias-label-primary);
 }
 
 /* Announced, not applied: the reader keeps the text they are looking at. */
@@ -137,8 +107,27 @@
   padding: 0 10px;
 }
 
-.lineTarget {
-  background: var(--dsw-alias-interactive-bg-hover);
+/* A navigated line's mark: a band in the scrollport over the line, so renderer
+   re-renders such as syntax highlighting do not drop it. It holds briefly, then
+   fades out and removes itself. Reduced motion keeps the fade: it is an
+   opacity change, not movement, and its end removes the band. */
+.lineMark {
+  position: absolute;
+  left: 0;
+  background: var(--dsw-alias-interactive-bg-hover-accent);
+  pointer-events: none;
+  animation: line-mark-fade 2s ease-in forwards;
+}
+
+@keyframes line-mark-fade {
+  0%,
+  30% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
 }
 
 /* The failure with nothing read yet: the whole body, centred a little above
@@ -195,12 +184,14 @@
   font-family: inherit;
   background: transparent;
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 16px;
+  border-radius: var(--dsw-radius-md);
   cursor: pointer;
 }
 
-.retry:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .retry:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 /* The type's 16px sheet before the chip's text; the chip's title row centres
@@ -234,14 +225,6 @@
   padding: 12px 10px;
 }
 
-/* The first read, centred in the still-empty body; loaded content replaces it. */
-.bodyLoading {
-  justify-content: center;
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-}
-
 .action {
   padding: 4px 10px;
   color: var(--dsw-alias-label-primary);
@@ -250,12 +233,14 @@
   white-space: normal;
   background: var(--dsw-alias-bg-layer-2);
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm);
   cursor: pointer;
 }
 
-.action:hover {
-  background: var(--dsw-alias-bg-layer-3);
+@media (hover: hover) {
+  .action:hover {
+    background: var(--dsw-alias-bg-layer-3);
+  }
 }
 
 /* The next page, asked for where the loaded text ends. */
@@ -269,13 +254,15 @@
   white-space: normal;
   background: var(--dsw-alias-bg-layer-2);
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
+  border-radius: var(--dsw-radius-sm);
   cursor: pointer;
 }
 
-.more:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-layer-3);
+@media (hover: hover) {
+  .more:hover:not(:disabled) {
+    color: var(--dsw-alias-label-primary);
+    background: var(--dsw-alias-bg-layer-3);
+  }
 }
 
 .more:disabled {
@@ -298,7 +285,7 @@
   line-height: 1;
   background: transparent;
   border: none;
-  border-radius: 28px;
+  border-radius: var(--dsw-radius-sm);
   cursor: pointer;
 }
 
@@ -307,7 +294,14 @@
   height: 15px;
 }
 
-.tool:hover {
+@media (hover: hover) {
+  .tool:hover {
+    color: var(--dsw-alias-label-primary);
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.tool[data-textpreview-tool='auto-refresh'][aria-pressed='true'] {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
 }

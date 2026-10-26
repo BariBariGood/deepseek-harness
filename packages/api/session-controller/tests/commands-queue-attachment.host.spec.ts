@@ -1,10 +1,13 @@
+import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
-import type { Agent, Inbox, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, Inbox } from '@deepseek-ai/dsh-agent'
 import { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, {
   SESSION_FORMAT_VERSION, Session, SessionId, SessionLogOffset, SessionSeq,
 } from '@deepseek-ai/dsh-session'
@@ -14,8 +17,14 @@ import { subagentIdentityProjectionDefinition } from '@deepseek-ai/dsh-subagent/
 import { describe, expect, it, vi } from 'vitest'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { SessionCommandController } from '../src/commands.ts'
-import { createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
+import { unsupportedModel, createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test': { kind: 'test' } & ContextFormed
+  }
+}
 
 async function commandHarness(
   childMode?: 'continuable' | 'seeded-continuable' | 'seed-only' | 'one-shot' | 'unknown' | 'corrupt',
@@ -26,12 +35,15 @@ async function commandHarness(
   inbox: Inbox
   steer: ReturnType<typeof vi.fn>
   cancel: ReturnType<typeof vi.fn>
+  resolveAgent: ReturnType<typeof vi.fn>
 }> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
+  await ctx.plugin(TypertRegistry)
   installSessionReadTestServices(ctx)
-  ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
+  await ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
   const sessionId = SessionId('commands-session')
   const ancestor = Session.create(SessionId('ancestor'))
   ancestor.append('subagent/descriptor', snapshotSubagentDescriptor({
@@ -60,9 +72,9 @@ async function commandHarness(
       mode: 'continuable', provider: 'test', label: 'child',
     }))
   } else if (childMode === 'one-shot') {
-    session.append('subagent/descriptor', snapshotSubagentDescriptor({
-      mode: 'one-shot', provider: 'test', label: 'child',
-    }))
+    session.append('subagent/descriptor', {
+      version: SUBAGENT_DESCRIPTOR_VERSION, mode: 'one-shot', provider: 'test', label: 'child',
+    })
   } else if (childMode === 'corrupt') {
     session.append('subagent/descriptor', {
       version: SUBAGENT_DESCRIPTOR_VERSION,
@@ -75,32 +87,31 @@ async function commandHarness(
   const cancel = vi.fn()
   const agent = {
     id: session.id,
+    options: { provider: 'fixture', model: 'fixture-model' },
+    whenIdle: vi.fn(() => Promise.resolve()),
+    runMaintenance: async () => { throw new Error('unexpected maintenance') },
+    send: vi.fn(),
+    inject: vi.fn(),
     session,
+    model: unsupportedModel(),
     inbox,
     status: 'running',
     ctx,
     steer,
     followup: vi.fn(),
     cancel,
-  } as unknown as Agent
+  } satisfies Agent
   await ctx.agents.register(agent)
   ctx.provide('workspaceRegistry', { get: () => undefined, list: () => [] } as never)
   ctx.provide('agentDefaultModel', {
     currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
     saveSelection: () => Promise.resolve(),
   } as never)
-  const selection: ModelSelectionRef = {
-    current: { provider: 'fixture', model: 'fixture-model' },
-    assembled: undefined,
-  }
-  const agents = {
-    resolveAgent: (id: SessionId) => Promise.resolve(id === agent.id
-      ? { agent }
-      : { error: new RemoteError('session/not-found', 'missing', { sessionId: id }) }),
-    selectionFor: () => selection,
-    serializeImageAdmission: <Value>(_agent: Agent, operation: () => Promise<Value>) => operation(),
-    composeAgent: () => Promise.resolve({ setup: () => {} }),
-  } as unknown as ApiSessionAgentController
+  const agents = new ApiSessionAgentController(ctx)
+  const resolveAgent = vi.spyOn(agents, 'resolveAgent').mockImplementation(id => Promise.resolve(id === agent.id
+    ? { agent }
+    : { error: new RemoteError('session/not-found', 'missing', { sessionId: id }) }))
+  vi.spyOn(agents, 'composeAgent').mockResolvedValue({ setup: () => {} })
   return {
     ctx,
     controller: new SessionCommandController(ctx, agents, '/workspace'),
@@ -108,6 +119,7 @@ async function commandHarness(
     inbox,
     steer,
     cancel,
+    resolveAgent,
   }
 }
 
@@ -116,9 +128,23 @@ async function expectFailure(operation: Promise<unknown>, code: string): Promise
 }
 
 describe('Session queue commands', () => {
+  it('edits a blockquote into ordinary text without changing prompt correlation', async () => {
+    const { ctx, controller, agent, inbox } = await commandHarness()
+    try {
+      const message = createUserMessage({ content: [{ type: 'text', text: '> selected' }],
+        source: { kind: 'user', rpcId: 'quote-edit' as import('../src/types.ts').SessionRequestId } })
+      inbox.append('next-turn', message)
+      await controller.updateQueue({ sessionId: agent.id, itemId: message.id,
+        action: { kind: 'edit', content: [{ type: 'text', text: 'plain replacement' }] } })
+      expect(inbox.nextTurn[0]?.content).toEqual([{ type: 'text', text: 'plain replacement' }])
+      expect(inbox.nextTurn[0]?.source).toEqual(message.source)
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('preserves the cold Agent resolver rejection', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentRegistry)
     const error = new RemoteError('session/agent-busy', 'owned by a child', { reason: 'subagent-owned' })
     const controller = new SessionCommandController(ctx, {
@@ -146,6 +172,7 @@ describe('Session queue commands', () => {
       action: {
         kind: 'edit',
         content: [{
+          // @ts-expect-error -- remote edit payloads can carry unsupported image blocks.
           type: 'image',
           attachment: {
             attachmentId: AttachmentId('att-edit'), mediaType: 'image/png', bytes: 1, width: 1, height: 1,
@@ -229,7 +256,7 @@ describe('Session queue commands', () => {
         content: [{ type: 'text', text: 'queued' }], source: { kind: 'user' },
       })
       const context = createUserMessage({
-        content: [{ type: 'text', text: 'context' }], source: { kind: 'plugin', plugin: 'test' },
+        content: [{ type: 'text', text: 'context' }], source: { kind: 'test' },
       })
       inbox.append('next-turn', queued)
       inbox.append('next-step', context)
@@ -308,12 +335,14 @@ function imageRef(id: string): ImageAttachmentRef {
 }
 
 function event(type: string, seq: SessionSeq, data: unknown): SessionEvent {
-  return { type, seq, time: seq + 1, data } as SessionEvent
+  const surface = ['user/message', 'system/message', 'developer/message', 'tool/result'].includes(type)
+  return { type, seq, time: seq + 1, data, ...surface ? { surfaceOp: 'append' } : {} } as SessionEvent
 }
 
 async function persistedController(
   events: SessionEvent[],
   readImage: (ref: ImageAttachmentRef) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>,
+  workspace: Pick<SessionHeader, 'cwd'> = { cwd: '/workspace' },
 ): Promise<{ ctx: Context; controller: SessionCommandController; sessionId: SessionId }> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
@@ -322,7 +351,7 @@ async function persistedController(
     version: SESSION_FORMAT_VERSION,
     id: sessionId,
     createdAt: 1,
-    cwd: '/workspace',
+    ...workspace,
     isSeeded: false,
   }
   ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
@@ -340,16 +369,97 @@ async function persistedController(
 }
 
 describe('Session attachment authorization', () => {
-  it('finds references in direct, message, inserted, nested, and streamed content', async () => {
-    const nested = imageRef('nested')
+  it.each([
+    ['system/message', 'message'], ['developer/message', 'message'], ['tool/result', 'message'],
+    ['team/message/queued', 'message'], ['tool/ptc-dispatch', 'content'],
+    ['compaction/summary', 'summary'], ['compaction/summary', 'rawOutput'],
+  ] as const)('reads the declared %s %s content without rewriting it', async (type, field) => {
+    const ref = imageRef(`${type}-${field}`)
+    const content = [{ type: 'image', attachment: ref }]
+    const message = type === 'team/message/queued' ? { content }
+      : type === 'tool/result' ? {
+        id: 'declared-message', role: 'tool', source: { kind: 'tool', callId: 'declared-call' },
+        toolCallId: 'declared-call', isError: false, content,
+      } : {
+        id: 'declared-message', role: type === 'developer/message' ? 'developer' : 'system',
+        source: { kind: 'system-prompt' }, content,
+      }
+    const data = field === 'message' ? { message } : { [field]: content }
+    const events = [event(type, SessionSeq(0), data)]
+    const saved = JSON.stringify(events)
+    const readImage = vi.fn((image: ImageAttachmentRef) => Promise.resolve({ ref: image, data: Uint8Array.of(1) }))
+    const fixture = await persistedController(events, readImage)
+    try {
+      await expect(fixture.controller.attachment({ sessionId: fixture.sessionId, attachmentId: ref.attachmentId }))
+        .resolves.toEqual({ attachment: ref, data: 'AQ==' })
+      expect(readImage).toHaveBeenCalledExactlyOnceWith(ref)
+      expect(JSON.stringify(events)).toBe(saved)
+    } finally {
+      await fixture.ctx.fiber.dispose()
+    }
+  })
+
+  it('does not authorize an attachment through malformed inbox entries', async () => {
+    const ref = imageRef('not-referenced')
+    for (const value of [undefined, null, {}, [null, 1, []]]) {
+      const readImage = vi.fn((image: ImageAttachmentRef) => Promise.resolve({ ref: image, data: Uint8Array.of(1) }))
+      const fixture = await persistedController([event('agent/inbox/spliced', SessionSeq(0), { inserted: value })], readImage)
+      try {
+        await expect(fixture.controller.attachment({ sessionId: fixture.sessionId, attachmentId: ref.attachmentId }))
+          .rejects.toMatchObject({ code: 'session/attachment-invalid', details: { reason: 'ATTACHMENT_NOT_REFERENCED' } })
+        expect(readImage).not.toHaveBeenCalled()
+      } finally {
+        await fixture.ctx.fiber.dispose()
+      }
+    }
+  })
+
+  it('ignores unrelated fields of a known message event and its content blocks', async () => {
+    const ref = imageRef('not-a-content-occurrence')
+    const content = [{ type: 'image', attachment: ref }]
+    const stored = event('user/message', SessionSeq(0), {
+      id: 'metadata', role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: 'no image', content }, { type: 'plugin:vendor', data: { content }, content }],
+      message: { content }, inserted: [{ content }],
+    })
+    const readImage = vi.fn((image: ImageAttachmentRef) => Promise.resolve({ ref: image, data: Uint8Array.of(1) }))
+    const fixture = await persistedController([stored], readImage)
+    try {
+      await expect(fixture.controller.attachment({ sessionId: fixture.sessionId, attachmentId: ref.attachmentId }))
+        .rejects.toMatchObject({ code: 'session/attachment-invalid' })
+      expect(readImage).not.toHaveBeenCalled()
+    } finally {
+      await fixture.ctx.fiber.dispose()
+    }
+  })
+
+  it.each(['external/image-record', 'session/title-llm-request'])('denies attachment access from %s without an attachment carrier', async (type) => {
+    const ref = imageRef('opaque-event-image')
+    const content = [{ type: 'image', attachment: ref }]
+    const opaque = { ...event(type, SessionSeq(0), {
+      content, message: { content }, inserted: [{ content }], messages: [{ content }],
+      stream: [{ type: 'chunk', time: 1, chunk: { type: 'block-end', index: 0, block: content[0] } }],
+    }), ignorable: true as const }
+    const readImage = vi.fn((image: ImageAttachmentRef) => Promise.resolve({ ref: image, data: Uint8Array.of(1) }))
+    const fixture = await persistedController([opaque], readImage)
+    try {
+      await expect(fixture.controller.attachment({ sessionId: fixture.sessionId, attachmentId: ref.attachmentId }))
+        .rejects.toMatchObject({ code: 'session/attachment-invalid', details: { reason: 'ATTACHMENT_NOT_REFERENCED' } })
+      expect(readImage).not.toHaveBeenCalled()
+    } finally {
+      await fixture.ctx.fiber.dispose()
+    }
+  })
+
+  it('finds references in direct, message, inserted, and streamed content', async () => {
+    const direct = imageRef('direct')
     const message = imageRef('message')
     const inserted = imageRef('inserted')
     const streamed = imageRef('streamed')
     const events: SessionEvent[] = [
-      { ...event('fixture/direct', SessionSeq(0), {
-        content: [null, [], { type: 'tool-result', content: [{ type: 'text', text: 'none' }] }, {
-          type: 'tool-result', content: [{ type: 'image', attachment: nested }],
-        }],
+      { ...event('user/message', SessionSeq(0), {
+        id: 'direct', role: 'user', source: { kind: 'user' },
+        content: [null, [], { type: 'text', text: 'none' }, { type: 'image', attachment: direct }],
       }), ignorable: true as const },
       {
         type: 'assistant/message', seq: SessionSeq(1), time: 2, surfaceOp: 'append',
@@ -366,7 +476,7 @@ describe('Session attachment authorization', () => {
       event('agent/inbox/spliced', SessionSeq(2), {
         target: 'next-turn',
         start: 0,
-        inserted: [createUserMessage({
+        inserted: [null, 1, [], { content: [] }, createUserMessage({
           content: [{ type: 'image', attachment: inserted }],
           source: { kind: 'user' },
         })],
@@ -400,7 +510,7 @@ describe('Session attachment authorization', () => {
     const readImage = vi.fn((ref: ImageAttachmentRef) => Promise.resolve({ ref, data: Uint8Array.of(1) }))
     const { ctx, controller, sessionId } = await persistedController(events, readImage)
 
-    for (const ref of [nested, message, inserted, streamed]) {
+    for (const ref of [direct, message, inserted, streamed]) {
       await expect(controller.attachment({ sessionId, attachmentId: ref.attachmentId }))
         .resolves.toEqual({ attachment: ref, data: 'AQ==' })
     }
@@ -443,13 +553,30 @@ describe('Session attachment authorization', () => {
     ]) {
       const ref = imageRef(`failure-${thrown.name}`)
       const fixture = await persistedController(
-        [event('fixture/content', SessionSeq(0), { content: [{ type: 'image', attachment: ref }] })],
+        [event('user/message', SessionSeq(0), { id: 'failure', role: 'user', source: { kind: 'user' }, content: [{ type: 'image', attachment: ref }] })],
         () => Promise.reject(thrown),
       )
       await expectFailure(fixture.controller.attachment({
         sessionId: fixture.sessionId,
         attachmentId: ref.attachmentId,
       }), thrown instanceof AttachmentError ? 'session/attachment-invalid' : 'gateway/internal')
+      await fixture.ctx.fiber.dispose()
+    }
+  })
+
+  it('rejects a cold Session without cwd before reading its referenced image', async () => {
+    const ref = imageRef('missing-cwd')
+    const readImage = vi.fn(async () => ({ ref, data: new Uint8Array([1]) }))
+    const fixture = await persistedController(
+      [event('user/message', SessionSeq(0), { id: 'image', role: 'user', source: { kind: 'user' }, content: [{ type: 'image', attachment: ref }] })],
+      readImage,
+      {},
+    )
+    try {
+      await expect(fixture.controller.attachment({ sessionId: fixture.sessionId, attachmentId: ref.attachmentId }))
+        .rejects.toMatchObject({ code: 'session/not-found', details: { sessionId: fixture.sessionId } })
+      expect(readImage).not.toHaveBeenCalled()
+    } finally {
       await fixture.ctx.fiber.dispose()
     }
   })

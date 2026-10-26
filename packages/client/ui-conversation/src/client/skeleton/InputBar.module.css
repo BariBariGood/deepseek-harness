@@ -35,7 +35,7 @@
   max-width: var(--dsh-composer-card-max-width);
   margin-bottom: 6px;
   padding: 4px 8px;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
@@ -58,7 +58,7 @@
      soft elevation tier. Fill: the input surface token (elevated in dark). */
   border: 0;
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
-  border-radius: 22px;
+  border-radius: var(--dsw-radius-panel);
   background: var(--dsw-specific-input-major);
   box-shadow: var(--dsw-elevation-soft);
   /* The draft text follows the Settings font-size preference (the textarea,
@@ -76,12 +76,15 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
-/* No-workspace trigger state: dashed l4 stroke marks the card as a pick-a-
-   workspace affordance rather than a live composer; hover answers in the
-   business blue to invite the click. Native `dashed` has a fixed browser
-   pattern, so the stroke is an ::after overlay: theme-token background masked
-   by an SVG dash ring (stroke-width 2 centered on the box edge = 1px visible
-   inside), which keeps the 22px radius and both themes. */
+@media (pointer: coarse) {
+  .card {
+    font-size: max(16px, var(--dsh-content-font-size, 14px));
+  }
+}
+
+/* No-workspace trigger state: an inset 1px dashed outline marks the card as a
+   workspace picker rather than a live composer. Keeping the complete stroke
+   inside the rounded box prevents clipped corner pixels from reading heavier. */
 .cardWorkspaceTrigger {
   --dsw-elevation-stroke-color: transparent;
   cursor: pointer;
@@ -90,24 +93,26 @@
 .cardWorkspaceTrigger::after {
   content: '';
   position: absolute;
-  inset: -1px;
-  border-radius: 22px;
-  background: var(--dsw-alias-border-l4);
-  transition: background-color 100ms ease;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E");
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100%25' height='100%25' fill='none' rx='22' ry='22' stroke='black' stroke-width='2' stroke-dasharray='4 4'/%3E%3C/svg%3E");
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px dashed currentColor;
+  border-radius: var(--dsw-radius-panel);
+  color: var(--dsw-alias-border-l4);
+  transition: color 100ms ease;
   pointer-events: none;
 }
 
 /* Disabled toolbar controls neither receive nor swallow clicks in the trigger
    state: pointer events fall through to the card's own click handler, making
-   the full capsule one pick target. */
+   the whole card one pick target. */
 .cardWorkspaceTrigger :disabled {
   pointer-events: none;
 }
 
-.cardWorkspaceTrigger:hover::after {
-  background: var(--dsw-alias-state-business-primary);
+@media (hover: hover) {
+  .cardWorkspaceTrigger:hover::after {
+    color: var(--dsw-alias-state-business-primary);
+  }
 }
 
 .accessory {
@@ -136,7 +141,7 @@
   margin-right: 4px;
 }
 
-/* The card's 22px corner arc still overlaps the scrollport's top (8px top
+/* The card's corner arc still overlaps the scrollport's top (8px top
    pad reaches only y=8): start the thumb's travel below the arc so it never
    pokes outside the capsule. WebKit-path only; Firefox's thin bar has no
    track margin, an accepted remainder. */
@@ -205,6 +210,11 @@
   content: none;
 }
 
+/* A selected command chip stands in for the caret until the next key. */
+.input[data-composer-chip-selected] {
+  caret-color: transparent;
+}
+
 .input[data-composer-composing] + .placeholder {
   visibility: hidden;
 }
@@ -269,6 +279,11 @@
   container-type: inline-size;
 }
 
+.row[data-model-compact] {
+  --dsh-composer-model-text-display: none;
+  --dsh-composer-model-icon-display: block;
+}
+
 .tools,
 .modes,
 .trailing {
@@ -299,6 +314,15 @@
   gap: 12px;
 }
 
+/* Compact spacing preserves room for the fixed-width controls in narrow cards. */
+@container (max-width: 560px) {
+  .tools,
+  .modes,
+  .trailing {
+    gap: 8px;
+  }
+}
+
 /* Attach circle (figma + control): 28px, selector fill, primary glyph. */
 .add {
   display: grid;
@@ -314,8 +338,10 @@
   cursor: pointer;
 }
 
-.add:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
+@media (hover: hover) {
+  .add:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-solid);
+  }
 }
 
 .add:disabled {
@@ -330,7 +356,7 @@
   height: 28px;
   padding: 0 20px 0 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
   outline: none;
   background-color: transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -346,8 +372,10 @@
   appearance: none;
 }
 
-.select:hover:not(:disabled) {
-  background-color: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .select:hover:not(:disabled) {
+    background-color: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .select:disabled {
@@ -379,8 +407,10 @@
   transform: translateY(-2px);
 }
 
-.primary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-info-hover);
+@media (hover: hover) {
+  .primary:hover:not(:disabled) {
+    background: var(--dsw-alias-button-info-hover);
+  }
 }
 
 .primary:disabled {
@@ -392,9 +422,16 @@
   margin-left: 8px;
   padding: 1px 8px;
   border: 1px solid currentColor;
-  border-radius: 4px;
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
   color: inherit;
   font-size: 12px;
   cursor: pointer;
 }
+
+.standardControls { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.tools[hidden], .standardControls[hidden] { display: none; }
+.trailingActive { flex: 1; margin-left: 0; }
+.activity { display: flex; align-items: center; flex: none; }
+.activity:empty { display: none; }
+.activityExpanded { flex: 1; min-width: 0; }

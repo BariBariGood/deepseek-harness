@@ -5,8 +5,8 @@
  *
  * A gesture only previews until it ends, then leaves through one intent, so the
  * embedder's operation sequence stays the single source of truth. Releasing a tab
- * clear of this surface floats it; releasing inside it but on no pane is not a
- * move at all.
+ * clear of this surface floats it; releasing inside it without an effective
+ * drop target changes nothing.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -21,6 +21,7 @@ import {
 import { fitOf, measurePaneFits, paneElements, sameFits } from './measure.ts'
 import { useGesture } from './pointer.ts'
 import { PaneTree, type SizePreview } from './PaneTree.tsx'
+import { TabLayout, type TabRetention } from './TabLayout.tsx'
 import type { PaneCallbacks, SplitBlock } from './render.ts'
 import css from './dockkit.module.css'
 
@@ -46,9 +47,9 @@ export interface DockSurfaceProps {
    */
   readonly canAddTab?: (paneId: PaneId) => boolean
   /**
-   * Whether a tab draws its close control and its menu's close item. Called
+   * Whether a tab may close via its close control, menu item, or middle click. Called
    * per rendered chip on every render; omit to keep every tab closable.
-   * `false` removes both routes without moving the chip: the close control
+   * `false` blocks these routes without moving the chip: the close control
    * paints over the title's end rather than beside it, so the chip is the same
    * width either way. The menu still opens and carries the embedder's items.
    */
@@ -109,12 +110,15 @@ const ALWAYS = (): boolean => true
 /**
  * Resolve where a pointer sits inside the docked surface. An edge zone is only
  * offered where the split it would make is allowed: within the pane budget and
- * with room for two halves; otherwise the release is not a move at all.
+ * with room for two halves. Strip slots that preserve the dragged tab's position
+ * offer no caret or placement intent. An undefined target inside the surface
+ * leaves the layout unchanged on release.
  */
 function hitTest(
   root: HTMLElement,
   x: number,
   y: number,
+  tabId: TabId,
   canSplit: boolean,
   fits: ReadonlyMap<PaneId, HalvesFit>,
   dropZones: 'edges' | 'horizontal',
@@ -125,7 +129,10 @@ function hitTest(
     const strip = pane.querySelector<HTMLElement>('[data-dockkit-strip]')
     if (strip !== null && containsPoint(strip.getBoundingClientRect(), x, y)) {
       const tabs = [...strip.querySelectorAll<HTMLElement>('[data-dockkit-tab]')]
-      return { kind: 'strip', paneId, index: insertionIndex(tabs.map(tab => tab.getBoundingClientRect()), x) }
+      const index = insertionIndex(tabs.map(tab => tab.getBoundingClientRect()), x)
+      const sourceIndex = tabs.findIndex(tab => tab.dataset.dockkitTab === tabId)
+      if (sourceIndex >= 0 && (index === sourceIndex || index === sourceIndex + 1)) return undefined
+      return { kind: 'strip', paneId, index }
     }
     const zone = dropZones === 'horizontal'
       ? canSplit && fitOf(fits, paneId).row
@@ -161,10 +168,11 @@ function sameSizes(a: readonly number[], b: readonly number[]): boolean {
 }
 
 /** The split tree and the gestures over it. */
-export function DockSurface({
+function Surface({
   state, canSplit, canAddTab, canCloseTab, intents, labels, renderTab, renderTabTitle, renderTabMenuItems, chrome, onRoom,
+  draw,
   dropZones = 'edges', minPaneFraction = MIN_PANE_FRACTION, hideSplitWhenBlocked = false,
-}: DockSurfaceProps): ReactNode {
+}: DockSurfaceProps & { readonly draw: (callbacks: PaneCallbacks, preview: SizePreview | undefined) => ReactNode }): ReactNode {
   const surface = useRef<HTMLDivElement | null>(null)
   const [preview, setPreview] = useState<Preview>(NO_PREVIEW)
   const [fits, setFits] = useState(NO_FITS)
@@ -227,12 +235,12 @@ export function DockSurface({
             setPreview({
               ...NO_PREVIEW,
               draggingTabId: tabId,
-              dropTarget: hitTest(root, moved.clientX, moved.clientY, canSplit, fits, dropZones),
+              dropTarget: hitTest(root, moved.clientX, moved.clientY, tabId, canSplit, fits, dropZones),
             })
           },
           up: (released) => {
             if (!dragging) return
-            const target = hitTest(root, released.clientX, released.clientY, canSplit, fits, dropZones)
+            const target = hitTest(root, released.clientX, released.clientY, tabId, canSplit, fits, dropZones)
             if (target === undefined) {
               if (containsPoint(root.getBoundingClientRect(), released.clientX, released.clientY)) return
               intents.floatTab(tabId, floatRectAt(released.clientX, released.clientY, FLOAT_DEFAULT_SIZE))
@@ -289,7 +297,27 @@ export function DockSurface({
 
   return (
     <div className={css.surface} ref={surface} data-dockkit-surface data-dockkit-drop-zones={dropZones}>
-      <PaneTree state={state} nodeId={state.rootId} callbacks={callbacks} preview={preview.sizes} />
+      {draw(callbacks, preview.sizes)}
     </div>
   )
+}
+
+/** Recursive docked layout; floating content is rendered separately by FloatLayer. */
+export function DockSurface(props: DockSurfaceProps): ReactNode {
+  return <Surface {...props} draw={(callbacks, preview) =>
+    <PaneTree state={props.state} nodeId={props.state.rootId} callbacks={callbacks} preview={preview} />} />
+}
+
+/** Horizontal Sidebar layout with stable tab containers across docking and floating. */
+export type DockLayoutProps = DockSurfaceProps & TabRetention
+
+/**
+ * Render one pane or two horizontal panes, and their floats, in one stable content tree.
+ * @param props - layout, gestures and lazy body-retention policy.
+ * @returns the layout; the containing ancestors must not establish a fixed-position containing block.
+ *   They may clip `overflow`, which does not reach the fixed-position floats.
+ */
+export function DockLayout(props: DockLayoutProps): ReactNode {
+  return <Surface {...props} draw={(callbacks, preview) =>
+    <TabLayout {...props} callbacks={callbacks} preview={preview} />} />
 }

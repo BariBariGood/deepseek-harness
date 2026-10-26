@@ -7,7 +7,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { LlmAttemptId } from '@deepseek-ai/dsh-llm'
 import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client'
 import { SESSION_FORMAT_VERSION, SessionSeq } from '@deepseek-ai/dsh-session/types'
-import { ok, type RemoteMock } from '@deepseek-ai/dsh-remote-mock'
+import { ok, streamHandle, type RemoteMock } from '@deepseek-ai/dsh-remote-mock'
 import { createClientTest, webApp } from '@deepseek-ai/dsh-client-test-runtime/src/assembly/index.ts'
 import { ClientSessions, SessionCreateError, SessionForkError } from '../src/client/sessions/service.ts'
 import { scopeOf } from '../src/client/scope.ts'
@@ -59,26 +59,51 @@ type FeedRow = {
   origin?: 'subagent'
   running?: boolean
   blank?: boolean
-  projections?: Record<string, unknown>
+  projections?: import('../src/types.ts').SessionProjectionValues
 }
 
 async function feedList(b: Bench, rows: FeedRow[]): Promise<void> {
   b.mock.remote.session.list.mockResolvedValue(ok({
-    items: rows.map(r => ({
+    items: rows.map(r => ({ agentAvailable: true,
       sessionId: sid(r.id), updatedAt: 1, running: r.running ?? false, blank: r.blank ?? false,
       ...(r.cwd !== undefined ? { cwd: r.cwd } : {}),
       ...(r.parentId !== undefined ? { parentSessionId: sid(r.parentId) } : {}),
       ...(r.origin !== undefined ? { origin: r.origin } : {}),
       ...(r.projections === undefined
         ? {}
-        : { projections: { asOfSeq: 0, values: r.projections } }),
+        : { projections: { kind: 'sequenced' as const, asOfSeq: 0, values: r.projections } }),
     })),
-  }) as never)
+  }))
   await b.svc.refresh()
   await Promise.resolve() // manager notifier flush
 }
 
 describe('list store projection', () => {
+  it('publishes format-status changes and preserves a newer update over an in-flight list', async ({ bench }) => {
+    const b = bench()
+    const historical = {
+      sessionId: sid('s1'), updatedAt: 1, running: false, blank: false, agentAvailable: false,
+      formatStatus: 'migration-required' as const,
+    }
+    b.mock.remote.session.list.mockResolvedValue(ok({ items: [historical] }))
+    await b.svc.refresh()
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s1')]?.formatStatus).toBe('migration-required')
+
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof b.mock.remote.session.list>>>()
+    b.unblock.push(() => { pending.resolve(ok({ items: [historical] })) })
+    b.mock.remote.session.list.mockReturnValueOnce(pending.promise)
+    const refreshing = b.svc.refresh()
+    b.svc.handleSessionAdded({ ...historical, formatStatus: 'current' })
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s1')]?.formatStatus).toBe('current')
+    pending.resolve(ok({ items: [historical] }))
+    await refreshing
+    await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('s1')]?.formatStatus).toBe('current')
+    expect(b.mock.remote.session.projections).not.toHaveBeenCalled()
+  })
+
   it('projects durable titles separately from cwd/id display fallbacks and parent links', async ({ bench }) => {
     const b = bench()
     b.svc.handleControlFrame({
@@ -113,7 +138,7 @@ describe('list store projection', () => {
   it('reflects live increments (host stream via manager) into the store', async ({ bench }) => {
     const b = bench()
     await feedList(b, [{ id: 's1' }])
-    b.svc.handleSessionAdded({
+    b.svc.handleSessionAdded({ agentAvailable: true,
       sessionId: sid('s2'), updatedAt: 2, running: false, blank: true,
     })
     await Promise.resolve()
@@ -146,7 +171,25 @@ describe('search', () => {
 })
 
 describe('scope tree', () => {
-  it('publishes transient Assistant chunks and the named durable v2 settlement through one event source', async ({ bench }) => {
+  it('opens a conversation from follow projections without a second projection request', async ({ bench }) => {
+    const b = bench()
+    b.mock.stream(FOLLOW, followScript(ok({
+      records: [], hasMore: false,
+      projections: { asOfSeq: 0, values: { subagentCatalog: [{
+        id: sid('child'), createdAt: 1, mode: 'one-shot',
+      }] } },
+    })))
+    await feedList(b, [{ id: 's1' }])
+    using reference = b.svc.retain(sid('s1'), { source: 'controllerOperation' })
+    await reference.ready
+    await vi.waitFor(() => {
+      expect(b.svc.list.getSnapshot().projectionsBySession[sid('s1')]?.values.subagentCatalog)
+        .toEqual([{ id: sid('child'), createdAt: 1, mode: 'one-shot' }])
+    })
+    expect(b.mock.remote.session.projections).not.toHaveBeenCalled()
+  })
+
+  it('publishes the final Assistant message before retiring transient chunks at Step end', async ({ bench }) => {
     const b = bench()
     await feedList(b, [{ id: 's1' }])
     using _reference = b.svc.retain(sid('s1'), { source: 'controllerOperation' })
@@ -214,13 +257,20 @@ describe('scope tree', () => {
     })
     await b.mock.streams.drained(FOLLOW)
     await vi.waitFor(() => {
-      expect(binding.eventSource.getSnapshot().entries).toHaveLength(1)
+      expect(binding.eventSource.getSnapshot().entries).toHaveLength(2)
     })
 
     expect(publications).toEqual([
       ['assistant/live-chunk'],
-      ['assistant/message'],
+      ['assistant/live-chunk', 'assistant/message'],
     ])
+    b.mock.streams.push(FOLLOW, {
+      type: 'event', event: { type: 'step/end', seq: 1, time: 3, data: { turn: 1, step: 1 } },
+    })
+    await b.mock.streams.drained(FOLLOW)
+    expect(binding.eventSource.getSnapshot().entries.map(entry => entry.event.type))
+      .toEqual(['assistant/message', 'step/end'])
+    expect(binding.eventSource.getSnapshot().change).toEqual({ kind: 'settle-assistant', attemptId })
     dispose()
   })
 
@@ -355,10 +405,10 @@ describe('scope tree', () => {
     await b.mock.streams.drained(FOLLOW)
     await vi.waitFor(() => {
       expect(binding.eventSource.getSnapshot().entries.map(entry => entry.event.type))
-        .toEqual(['assistant/message', 'assistant/message'])
+        .toEqual(['assistant/message', 'assistant/live-chunk', 'assistant/message'])
     })
     expect(binding.eventSource.getSnapshot().change).toEqual({
-      kind: 'settle-assistant', attemptId: String(attemptId), entry: currentMessage,
+      kind: 'append', entries: [currentMessage],
     })
   })
 
@@ -443,7 +493,7 @@ describe('scope tree', () => {
     using reference = b.svc.retainAgentScope(sid('s-early'))
     const scoped = reference.binding.ctx
     expect(scopeOf(scoped)).toBe('s-early')
-    b.svc.handleControlFrame({ type: 'baseline', value: { jobs: {}, projections: {} } })
+    b.svc.handleControlFrame({ type: 'baseline', value: { projections: {} } })
     await feedList(b, [])
     expect(b.svc.scope(sid('s-early'))).toBe(scoped)
     reference.release()
@@ -507,7 +557,7 @@ describe('Agent scope disposal lifecycle', () => {
     const b = bench()
     const readiness = b.ctx.plugin(() => undefined)
     await readiness
-    b.svc.handleSessionAdded({
+    b.svc.handleSessionAdded({ agentAvailable: true,
       sessionId: sid('live'), updatedAt: 1, running: false, blank: true,
     })
     await Promise.resolve()
@@ -533,7 +583,7 @@ describe('Agent scope disposal lifecycle', () => {
       if (signal === undefined) throw new Error('fixture requires a signal')
       followSignal = signal
       let opened = false
-      return {
+      return streamHandle<SessionFollowFrame>({
         [Symbol.asyncIterator]: () => ({
           next: () => {
             if (!opened) {
@@ -570,7 +620,7 @@ describe('Agent scope disposal lifecycle', () => {
             })
           },
         }),
-      }
+      })
     })
     const readiness = b.ctx.plugin(() => undefined)
     await readiness
@@ -607,7 +657,7 @@ describe('Agent scope disposal lifecycle', () => {
       const closeGate = Promise.withResolvers<undefined>()
       closeGates.set(sessionId, closeGate)
       let opened = false
-      return {
+      return streamHandle<SessionFollowFrame>({
         [Symbol.asyncIterator]: () => ({
           next: () => {
             if (!opened) {
@@ -637,7 +687,7 @@ describe('Agent scope disposal lifecycle', () => {
             })
           },
         }),
-      }
+      })
     })
     const readiness = b.ctx.plugin(() => undefined)
     await readiness
@@ -701,55 +751,70 @@ describe('borrow-only bindings', () => {
 })
 
 describe('catalog-addressed navigation', () => {
-  it('opens an explicit catalog without retaining it and keeps one-shot labels optional', async ({ bench }) => {
+  it('retains a projected child independently of its parent and shares its history generation', async ({ bench }) => {
     const b = bench()
-    b.svc.handleControlFrame({
-      type: 'projection', sessionId: sid('one-shot'), key: 'title', value: 'Investigate startup', seq: 2,
-    })
-    b.mock.remote.subagents.list.mockResolvedValue(ok({
-      entries: [
-        { kind: 'child', id: sid('one-shot'), mode: 'one-shot', activity: 'inactive', hasChildren: false },
-        { kind: 'diagnostic', id: sid('missing'), reason: 'unavailable' },
-      ],
-      parentAvailable: true,
+    await feedList(b, [{ id: 'root' }])
+    b.mock.remote.session.projections.mockResolvedValue(ok({
+      kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [{ id: sid('child'), createdAt: 1, mode: 'continuable', label: 'Child' }] },
     }))
-    b.svc.setSubagentCatalogOpen(sid('root'), true)
-    await b.svc.refreshSubagents(sid('root'))
-    b.svc.setSubagentCatalogOpen(sid('root'), false)
-
-    expect(b.svc.list.getSnapshot().byId[sid('one-shot')]).toMatchObject({
-      title: 'Investigate startup',
-      displayTitle: 'Investigate startup',
-      projectionValues: { title: 'Investigate startup' },
-    })
-    expect(b.svc.list.getSnapshot().byId[sid('missing')]).toBeUndefined()
-    expect(b.svc.binding(sid('one-shot'))).toBeUndefined()
-    expect(b.mock.remote.subagents.list).toHaveBeenCalledOnce()
+    await b.svc.refreshProjections(sid('root'))
+    const address = b.svc.subagentAddress(sid('child'))!
+    using first = b.svc.retain(sid('child'), { source: 'controllerOperation' })
+    using second = b.svc.retain(address, { source: 'gateway' })
+    await Promise.all([first.ready, second.ready])
+    expect(first.binding).toBe(second.binding)
+    expect(b.svc.scope(sid('root'))).toBeUndefined()
+    expect(b.svc.list.getSnapshot().ids).toEqual([sid('root')])
+    expect(b.svc.list.getSnapshot().byId[sid('child')]?.retainedBy)
+      .toEqual({ controllerOperation: 1, gateway: 1 })
+    const binding = first.binding
+    first.release()
+    expect(b.svc.binding(sid('child'))).toBe(binding)
+    expect(b.svc.list.getSnapshot().byId[sid('child')]?.retainedBy).toEqual({ gateway: 1 })
+    second.release()
+    expect(b.svc.binding(sid('child'))).toBeUndefined()
+    expect(b.svc.list.getSnapshot().byId[sid('child')]?.retainedBy).toEqual({})
+    expect(b.svc.subagentAddress(sid('child'))).toEqual(address)
+    expect(b.mock.log.requests(FOLLOW)).toHaveLength(1)
+    expect(b.mock.remote.session.projections).toHaveBeenCalledOnce()
   })
+
+  for (const title of [undefined, 'Investigate startup']) {
+    it(`loads an unretained one-shot child with projected title ${String(title)}`, async ({ bench }) => {
+      const b = bench()
+      if (title !== undefined) b.svc.handleControlFrame({
+        type: 'projection', sessionId: sid('one-shot'), key: 'title', value: title, seq: 2,
+      })
+      b.mock.remote.session.projections.mockResolvedValue(ok({
+        kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [{ id: sid('one-shot'), createdAt: 1, mode: 'one-shot' }] },
+      }))
+      await b.svc.refreshProjections(sid('root'))
+      expect(b.svc.list.getSnapshot().byId[sid('one-shot')]?.displayTitle).toBe(title ?? 'one-shot')
+      if (title !== undefined) expect(b.svc.list.getSnapshot().byId[sid('one-shot')]).toMatchObject({
+        title, projectionValues: { title },
+      })
+      expect(b.svc.binding(sid('one-shot'))).toBeUndefined()
+      expect(b.svc.retainInfo(sid('one-shot')).getSnapshot().referenceCount).toBe(0)
+      expect(b.mock.remote.session.projections).toHaveBeenCalledOnce()
+      expect(b.mock.log.requests(FOLLOW)).toHaveLength(0)
+    })
+  }
 
   it('keeps projected titles in standard list rows for an addressed route', async ({ bench }) => {
     const b = bench()
-    b.mock.remote.subagents.list.mockImplementation((payload) => {
-      const parentSessionId = payload
-      if (parentSessionId === sid('root')) {
-        return Promise.resolve(ok({
-          entries: [{
-            kind: 'child', id: sid('child'), mode: 'continuable', label: 'Child',
-            activity: 'inactive', hasChildren: true,
-          }] as never[],
-          parentAvailable: true,
-        }))
+    b.mock.remote.session.projections.mockImplementation((payload) => {
+      const { sessionId } = payload as { sessionId: SessionId }
+      if (sessionId === sid('root')) {
+        return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [{ createdAt: 1,
+          id: sid('child'), mode: 'continuable', label: 'Child',
+        }] } }))
       }
-      if (parentSessionId === sid('child')) {
-        return Promise.resolve(ok({
-          entries: [{
-            kind: 'child', id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
-            activity: 'inactive', hasChildren: false,
-          }] as never[],
-          parentAvailable: false,
-        }))
+      if (sessionId === sid('child')) {
+        return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { title: 'Child session title', subagentCatalog: [{ createdAt: 1,
+          id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
+        }] } }))
       }
-      return Promise.resolve(ok({ entries: [], parentAvailable: false }))
+      return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [] } }))
     })
     await feedList(b, [
       { id: 'root' },
@@ -759,8 +824,8 @@ describe('catalog-addressed navigation', () => {
       },
       { id: 'grandchild', cwd: '/summary-grandchild', parentId: 'child', origin: 'subagent' },
     ])
-    await b.svc.refreshSubagents(sid('root'))
-    await b.svc.refreshSubagents(sid('child'))
+    await b.svc.refreshProjections(sid('root'))
+    await b.svc.refreshProjections(sid('child'))
     using _reference = b.svc.retain({
       parentSessionId: sid('child'), childSessionId: sid('grandchild'), mode: 'continuable',
     }, { source: 'controllerOperation' })
@@ -776,31 +841,23 @@ describe('catalog-addressed navigation', () => {
 
   it('projects a retained descendant and discovers ancestor addresses without retaining ancestor scopes', async ({ bench }) => {
     const b = bench()
-    b.mock.remote.subagents.list.mockImplementation((payload) => {
-      const parentSessionId = payload
-      if (parentSessionId === sid('root')) {
-        return Promise.resolve(ok({
-          entries: [{
-            kind: 'child', id: sid('child'), mode: 'continuable', label: 'Child',
-            activity: 'inactive', hasChildren: true,
-          }] as never[],
-          parentAvailable: true,
-        }))
+    b.mock.remote.session.projections.mockImplementation((payload) => {
+      const { sessionId } = payload as { sessionId: SessionId }
+      if (sessionId === sid('root')) {
+        return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [{ createdAt: 1,
+          id: sid('child'), mode: 'continuable', label: 'Child',
+        }] } }))
       }
-      if (parentSessionId === sid('child')) {
-        return Promise.resolve(ok({
-          entries: [{
-            kind: 'child', id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
-            activity: 'inactive', hasChildren: false,
-          }] as never[],
-          parentAvailable: false,
-        }))
+      if (sessionId === sid('child')) {
+        return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [{ createdAt: 1,
+          id: sid('grandchild'), mode: 'continuable', label: 'Grandchild',
+        }] } }))
       }
-      return Promise.resolve(ok({ entries: [], parentAvailable: false }))
+      return Promise.resolve(ok({ kind: 'sequenced', asOfSeq: 0, values: { subagentCatalog: [] } }))
     })
     await feedList(b, [{ id: 'root' }])
-    await b.svc.refreshSubagents(sid('root'))
-    await b.svc.refreshSubagents(sid('child'))
+    await b.svc.refreshProjections(sid('root'))
+    await b.svc.refreshProjections(sid('child'))
     using reference = b.svc.retain({
       parentSessionId: sid('child'), childSessionId: sid('grandchild'), mode: 'continuable',
     }, { source: 'controllerOperation' })
@@ -812,7 +869,9 @@ describe('catalog-addressed navigation', () => {
     expect(list.byId[sid('grandchild')]).toMatchObject({ parentId: sid('child'), origin: 'subagent' })
     expect(b.svc.binding(sid('child'))).toBeUndefined()
     expect(b.svc.subagentAddress(sid('child'))).toEqual({
-      parentSessionId: sid('root'), childSessionId: sid('child'), mode: 'continuable',
+      parentSessionId: sid('root'),
+      childSessionId: sid('child'),
+      mode: 'continuable',
     })
     using child = b.svc.retain(sid('child'), { source: 'controllerOperation' })
     await child.ready
@@ -873,6 +932,38 @@ describe('create', () => {
 })
 
 describe('fork', () => {
+  it.for([undefined, false, true])('forwards migration permission %s without opening the source', async (allowMigration, { bench }) => {
+    const b = bench()
+    b.mock.remote.session.fork.mockResolvedValueOnce(ok({ sessionId: sid('child') }))
+    const source = sid('source')
+    const permission = allowMigration === undefined ? {} : { allowMigration }
+
+    await expect(b.svc.fork({ sessionId: source, atSeq: 7, ...permission })).resolves.toBe(sid('child'))
+
+    expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: source, atSeq: 7, ...permission })
+    expect(b.svc.binding(source)).toBeUndefined()
+    expect(b.mock.log.requests(FOLLOW)).toHaveLength(0)
+  })
+
+  it('preserves the Host migration refusal without creating or opening a Session', async ({ bench }) => {
+    const b = bench()
+    const source = sid('source')
+    const error = new RemoteError('session/migration-required', 'migration required', { sessionId: source })
+    const onCreated = vi.fn<(childId: SessionId) => void>()
+    b.mock.remote.session.fork.mockResolvedValueOnce(err(error))
+
+    const failure = await b.svc.fork({ sessionId: source, allowMigration: false, onCreated })
+      .catch((cause: unknown) => cause)
+
+    expect(failure).toBeInstanceOf(SessionForkError)
+    expect(failure).toMatchObject({ sourceSessionId: source, rpcError: error })
+    expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: source, allowMigration: false })
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(b.mock.remote.session.rename).not.toHaveBeenCalled()
+    expect(b.svc.list.getSnapshot().ids).toEqual([])
+    expect(b.mock.log.requests(FOLLOW)).toHaveLength(0)
+  })
+
   it('propagates a failed fork without creating or retaining a child', async ({ bench }) => {
     const b = bench()
     const error = new RemoteError('session/not-found', 'source missing', { sessionId: sid('source') })
@@ -907,21 +998,23 @@ describe('fork', () => {
 
     expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', atSeq: 7 })
     expect(b.mock.remote.session.rename).toHaveBeenCalledExactlyOnceWith({ sessionId: 'child', title: childTitle })
+    expect(b.mock.log.requests(FOLLOW)).toHaveLength(0)
+    expect(b.svc.binding(sid('child'))).toBeUndefined()
+    expect(b.svc.retainInfo(sid('child')).getSnapshot().referenceCount).toBe(0)
     await Promise.resolve()
+    expect(b.svc.list.getSnapshot().byId[sid('child')]).not.toHaveProperty('parentId')
     expect(b.svc.list.getSnapshot().byId[sid('child')]).toMatchObject({
       title: childTitle,
       displayTitle: childTitle,
-      parentId: 'source',
     })
   })
 
-  it('floors a fractional anchor to the real event seq the wire accepts', async ({ bench }) => {
+  it('sends the exact boundary seq verbatim: callers pass real event seqs', async ({ bench }) => {
     const b = bench()
     await feedList(b, [{ id: 'source', cwd: '/work' }])
     b.mock.remote.session.fork.mockResolvedValue(ok({ sessionId: sid('child') }))
 
-    // The frozen node of an interrupted turn carries turnEnd.seq - 0.9.
-    await expect(b.svc.fork({ sessionId: sid('source'), atSeq: 41.1 })).resolves.toBe('child')
+    await expect(b.svc.fork({ sessionId: sid('source'), atSeq: 41 })).resolves.toBe('child')
 
     expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', atSeq: 41 })
   })
@@ -938,7 +1031,7 @@ describe('fork', () => {
     expect(b.mock.remote.session.rename).not.toHaveBeenCalled()
   })
 
-  it('rejects child rename failure while preserving its catalog row and releasing the operation', async ({ bench }) => {
+  it('rejects child rename failure while preserving its catalog row without retaining the child', async ({ bench }) => {
     const b = bench()
     b.svc.handleControlFrame({
       type: 'projection', sessionId: sid('source'), key: 'title', value: 'Roadmap', seq: 2,
@@ -947,18 +1040,21 @@ describe('fork', () => {
     b.mock.remote.session.fork.mockResolvedValue(ok({ sessionId: sid('child') }))
     b.mock.remote.session.rename.mockResolvedValue(err(new RemoteError('session/title-invalid', 'rejected', { sessionId: sid('child') })))
 
-    await expect(b.svc.fork({ sessionId: sid('source'), increaseTitle: true }))
+    const onCreated = vi.fn()
+    await expect(b.svc.fork({ sessionId: sid('source'), increaseTitle: true, onCreated }))
       .rejects.toThrow('fork child rename failed: session/title-invalid: rejected')
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith('child')
     expect(b.svc.list.getSnapshot().byId[sid('child')]).toBeDefined()
     expect(b.svc.binding(sid('child'))).toBeUndefined()
     expect(b.svc.retainInfo(sid('child')).getSnapshot().referenceCount).toBe(0)
+    expect(b.mock.log.requests(FOLLOW)).toHaveLength(0)
   })
 })
 
 describe('catalog arrival', () => {
-  it('keeps a retained generation indexed after its Host row is removed', async ({ bench }) => {
+  it('keeps a retained binding alive without a catalog row after Host removal', async ({ bench }) => {
     const b = bench()
-    b.svc.handleSessionAdded({ sessionId: sid('s-new'), updatedAt: 1, running: false, blank: true })
+    b.svc.handleSessionAdded({ agentAvailable: true, sessionId: sid('s-new'), updatedAt: 1, running: false, blank: true })
     await Promise.resolve()
     expect(b.svc.binding(sid('s-new'))).toBeUndefined()
     const reference = b.svc.retain(sid('s-new'), { source: 'controllerOperation' })
@@ -967,9 +1063,11 @@ describe('catalog arrival', () => {
     b.svc.handleSessionRemoved(sid('s-new'))
     await Promise.resolve()
     expect(b.svc.list.getSnapshot().ids).not.toContain(sid('s-new'))
-    expect(b.svc.list.getSnapshot().byId[sid('s-new')]?.retainedBy).toEqual({ controllerOperation: 1 })
+    expect(b.svc.list.getSnapshot().byId[sid('s-new')]).toBeUndefined()
+    expect(b.svc.retainInfo(sid('s-new')).getSnapshot().referenceCount).toBe(1)
     expect(b.svc.binding(sid('s-new'))).toBe(binding)
     reference.release()
+    expect(b.svc.binding(sid('s-new'))).toBeUndefined()
     expect(b.svc.list.getSnapshot().byId[sid('s-new')]).toBeUndefined()
   })
 })
@@ -1027,7 +1125,7 @@ describe('blank mirror', () => {
   it('takes session-added blank=true as the hidden birth and list blank as reconnect authority', async ({ bench }) => {
     const b = bench()
     await feedList(b, [])
-    b.svc.handleSessionAdded({
+    b.svc.handleSessionAdded({ agentAvailable: true,
       sessionId: sid('s-new'), updatedAt: 2, running: false, blank: true, cwd: '/w/a',
     })
     await Promise.resolve()

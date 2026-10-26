@@ -1,7 +1,6 @@
 /**
- * The globally named `send_message` and `interrupt_agent` tools: thin
- * model-facing adapters over `ctx.subagents.sendMessage()` and
- * `ctx.subagents.interrupt()`. They perform no lifecycle routing of their own —
+ * Shared messaging, interruption, and child discovery tools.
+ * They perform no lifecycle routing of their own —
  * residency, cold resume, and interrupt authorization belong to the subagent
  * service — and they live apart from the provider-bound
  * `@deepseek-ai/dsh-tool-subagent` instances so multiple delegation tools share
@@ -16,22 +15,22 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { markAdjacentAgentSendMessageTool } from '@deepseek-ai/dsh-subagent/internal'
+import { registerListAgents } from './list-agents.ts'
 
 export const name = 'tool-subagent-control'
-export const inject = ['tools', 'subagents']
+export const inject = ['tools', 'subagents', 'agents']
 
 /**
- * Register the `send_message` and `interrupt_agent` tools.
- * @param ctx - context carrying the tool registry and subagent service.
+ * Register the shared subagent control and discovery tools.
+ * @param ctx - context carrying tools, subagents, and live Agents.
  */
 export function apply(ctx: Context): void {
+  registerListAgents(ctx)
   ctx.tools.register(markAdjacentAgentSendMessageTool(defineTool({
     name: 'send_message',
     description:
-      'Send a message to a direct continuable child by its agent id. If you are a resident continuable child, '
-      + 'you may also target your direct parent. If the target is still working, the message steers its nearest step; '
-      + 'if it is idle, the message starts a turn. This call returns no answer from the agent — only confirmation '
-      + 'that the message was delivered. A failure means the message was NOT delivered.',
+      'Send a message to an agent. A working agent receives it at its next step; an idle agent starts a new turn with it. '
+      + 'Returns delivery confirmation, not the agent\'s answer.',
     parameters: {
       agent_id: {
         type: 'string',
@@ -76,17 +75,14 @@ export function apply(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'interrupt_agent',
     description:
-      'Request cancellation of a background agent\'s current turn by its agent id. The target may be your '
-      + 'direct child or a deeper agent created under you. Only the current turn stops: messages already '
-      + 'queued for the agent stay parked until a later send_message, agents it started keep running, and '
-      + 'the agent itself stays available for follow-ups. This call returns as soon as the stop request is '
-      + 'accepted, so the target may keep running briefly; interrupting an agent that already finished is '
-      + 'an accepted no-op.',
+      'Ask a subagent to stop its current work. This call returns without waiting for it to stop. '
+      + 'You can continue a local direct child\'s conversation later with send_message. '
+      + 'External executions stop permanently and cannot receive follow-ups. Subagents it started will keep running.',
     parameters: {
       agent_id: {
         type: 'string',
         required: true,
-        description: 'The agent id of the running agent to interrupt.',
+        description: 'The id of an agent created under you: your direct child or a deeper descendant.',
       },
     },
     output: {

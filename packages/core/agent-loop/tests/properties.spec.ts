@@ -9,6 +9,7 @@
  * idle→running→idle, while teardown is a registry lifecycle.
  */
 
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
@@ -43,6 +44,7 @@ async function harness() {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock'], new EchoAdapter())
@@ -74,7 +76,7 @@ function recordStatus(ctx: Context, agent: Agent): { seen: string[]; dispose: ()
 function userMessageTexts(agent: Agent): string[] {
   return agent.session.snapshotEvents()
     .filter(e => e.type === 'user/message')
-    .map(e => (e.data as { content: { type: string; text?: string }[] }).content.map(b => b.text ?? '').join(''))
+    .map(e => e.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join(''))
 }
 
 function turnNumbers(agent: Agent): number[] {

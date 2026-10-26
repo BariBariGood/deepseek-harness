@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { agentEvents, installModelSelection, type Agent, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
-import LlmRuntime, { createMessage, createSystemMessage, createToolResultMessage, createUserMessage, LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createDeveloperMessage, createMessage, createSystemMessage, createToolResultMessage, createUserMessage, LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
@@ -18,6 +19,13 @@ import SessionReferenceResolver, {
 } from '@deepseek-ai/dsh-session-reference'
 import { stringifyTagSafeJson } from '../src/serialization.ts'
 import { SpillLocator, SpillStore, type SaveTextSpill, type SpillRef } from '@deepseek-ai/dsh-spill'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test': { kind: 'test' } & ContextFormed
+    'workspace': { kind: 'workspace' } & ContextFormed
+  }
+}
 
 class TestSessionQueryEngine extends SessionQueryEngine {
   override searchSessions(
@@ -42,6 +50,7 @@ async function harness(config: Config = {}): Promise<Context> {
   // The live registry and the title unit it hosts: discovery labels an
   // attached session from its projection cut, never from its log.
   await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(AgentRegistry)
   // Shipped base values: this suite only needs the unit the service registers.
   await ctx.plugin(SessionTitleService, { fallbackMaxWords: 5, fallbackMaxBytes: 40, maxTitleBytes: 80 })
   await ctx.plugin(TestSessionQueryEngine)
@@ -92,7 +101,7 @@ function checkpointSource(id: string) {
 function appendConversation(session: Session): void {
   session.append(
     'system/message',
-    { turn: 1, step: 1, message: createSystemMessage('system prompt secret', 'system-prompt') },
+    { turn: 1, step: 1, message: createSystemMessage('system prompt secret') },
     { surfaceOp: 'append' },
   )
   const oldUser = session.append(
@@ -140,7 +149,7 @@ function appendConversation(session: Session): void {
   session.append(
     'user/message',
     createUserMessage({
-      content: [{ type: 'text', text: 'workspace secret' }], source: { kind: 'plugin', plugin: 'workspace' },
+      content: [{ type: 'text', text: 'workspace secret' }], source: { kind: 'workspace' },
     }),
     { surfaceOp: 'append' },
   )
@@ -156,7 +165,7 @@ function appendConversation(session: Session): void {
     'user/message',
     createUserMessage({
       content: [{ type: 'text', text: 'plugin steer' }],
-      source: { kind: 'plugin', plugin: 'goal' },
+      source: { kind: 'test' },
     }),
     { surfaceOp: 'append' },
   )
@@ -192,7 +201,7 @@ function appendConversation(session: Session): void {
   session.append(
     'user/message',
     createUserMessage({
-      content: [{ type: 'text', text: 'plugin-generated user' }], source: { kind: 'plugin', plugin: 'goal' },
+      content: [{ type: 'text', text: 'plugin-generated user' }], source: { kind: 'test' },
     }),
     { surfaceOp: 'append' },
   )
@@ -318,7 +327,7 @@ describe('session reference spill outcomes', () => {
       const target = ctx.sessions.create(SessionId('target'))
       const source = ctx.sessions.create(SessionId('source'))
       appendText(source, 'complete fact')
-      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }])
+      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
       expect(contextText(result)).not.toContain('Reference omissions')
       expect(contextText(result)).toContain('complete fact')
       expect(save).not.toHaveBeenCalled()
@@ -340,7 +349,7 @@ describe('session reference spill outcomes', () => {
       const captured = source.snapshotEvents().at(-1)?.seq
       const read = vi.spyOn(ctx.sessionQuery, 'readSurface')
       const store = ctx.spillStore as RecordingSpill
-      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }])
+      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
       expect(read).toHaveBeenCalledTimes(1)
       expect(store.saves).toHaveLength(1)
       const saved = store.saves[0]!
@@ -377,11 +386,12 @@ describe('session reference spill outcomes', () => {
       const target = ctx.sessions.create(SessionId('target'))
       const sources = ['one', 'two', 'three'].map(id => ctx.sessions.prepare(SessionId(id)))
       const detachSources = sources.map(source => ctx.sessions.enter(source))
+      sources.forEach((source) => { ctx.sessions.announce(source) })
       sources.forEach((source, index) => { appendText(source, index === 1 ? 'intact' : 'large'.repeat(300)) })
       const save = vi.spyOn(ctx.spillStore, 'saveText').mockImplementation(async input => ({
         locator: SpillLocator(`memory:${input.suggestedName}`), bytes: Buffer.byteLength(input.content), retrievalHint: 'Read the captured transcript.',
       }))
-      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], sources.map(source => ({ sessionId: source.id })))
+      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], sources.map(source => ({ sessionId: source.id })), { provider: 'seed', model: 'seed' })
       expect(save.mock.calls.map(([input]) => input.suggestedName)).toEqual(['session-reference-1.txt', 'session-reference-3.txt'])
       const context = result.additionalContext!
       target.append('user/message', context, { surfaceOp: 'append' })
@@ -407,7 +417,7 @@ describe('session reference spill outcomes', () => {
         appendText(source, 'later mutation must not appear')
         return { locator: SpillLocator('memory:frozen'), bytes: Buffer.byteLength(input.content), retrievalHint: 'Read frozen capture.' }
       })
-      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }])
+      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
       expect(read).toHaveBeenCalledTimes(1)
       const full = save.mock.calls[0]![0].content
       for (const text of ['checkpoint', 'recent user', 'human steer', 'visible answer']) expect(full).toContain(text)
@@ -429,7 +439,7 @@ describe('session reference spill outcomes', () => {
       const target = ctx.sessions.create(SessionId('target'))
       const source = ctx.sessions.create(SessionId('source'))
       appendText(source, '界'.repeat(500))
-      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }])
+      const result = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
       const prompt = contextText(result)
       expect(prompt).toContain('"status":"unavailable"')
       expect(prompt).toContain(mode === 'missing' ? 'storage-not-configured' : 'save-failed')
@@ -458,7 +468,7 @@ describe('session reference spill outcomes', () => {
       })
       const direct = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: formatSessionReferenceMention({ sessionId: source.id }) }] })
       const pending = agentEvents(ctx, fakeAgent(target)).waterfall('agent/pre-step',
-        { messages: [direct], turn: 1, step: 1, signal: controller.signal },
+        { modelSelection: { provider: 'seed', model: 'seed' }, messages: [direct], turn: 1, step: 1, signal: controller.signal },
         () => Promise.resolve({ kind: 'enter' as const, messages: [direct] }))
       const rejected = expect(pending).rejects.toThrow(expectCode('SESSION_REFERENCE_CANCELLED'))
       await started.promise
@@ -499,7 +509,7 @@ describe('model-relative reference budgets', () => {
     source.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'x'.repeat(250_000) }], source: { kind: 'user' },
     }), { surfaceOp: 'append' })
-    const prepare = (signal?: AbortSignal) => ctx.sessionReferenceResolver.prepare(agent, [], [{ sessionId: source.id }], signal)
+    const prepare = (signal?: AbortSignal) => ctx.sessionReferenceResolver.prepare(agent, [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' }, signal)
     return { ctx, agent, source, resolve, prepare, resolverFiber, llmFiber }
   }
 
@@ -525,32 +535,28 @@ describe('model-relative reference budgets', () => {
     else expect(resolve).toHaveBeenCalledWith('seed', 'seed', undefined)
   })
 
-  it('uses the assembled selection, not the header, seed, or next selected model', async () => {
+  it('uses the fixed pre-step route independently of the stored header and Agent options', async () => {
     const { ctx, agent, source, resolve } = await setup()
-    const selection: ModelSelectionRef = { current: { provider: 'selected', model: 'large' }, assembled: undefined }
-    installModelSelection(ctx, selection)
-    await ctx.systemPrompt.assemble({ agent, scope: agent })
-    selection.current = { provider: 'selected', model: 'small' }
     const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: formatSessionReferenceMention({ sessionId: source.id }) }] })
     const signal = new AbortController().signal
-    const enter = () => agentEvents(ctx, agent).waterfall('agent/pre-step', { messages: [message], turn: 1, step: 1, signal },
-      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }))
-    const first = await enter()
+    const enter = (model: string) => agentEvents(ctx, agent).waterfall('agent/pre-step', {
+      modelSelection: { provider: 'selected', model }, messages: [message], turn: 1, step: 1, signal,
+    }, () => Promise.resolve({ kind: 'enter' as const, messages: [message] }))
+    const first = await enter('large')
     expect(first.kind).toBe('enter')
     if (first.kind !== 'enter') throw new Error('expected step entry')
     const firstContext = first.messages[1]
     if (firstContext === undefined) throw new Error('expected reference context')
     expect(bytes({ content: [], additionalContext: firstContext })).toBe(160_000)
     expect(resolve).toHaveBeenLastCalledWith('selected', 'large', signal)
-    await ctx.systemPrompt.assemble({ agent, scope: agent })
     resolve.mockResolvedValue({ provider: 'selected', id: 'small', name: 'small', context: { contextWindow: 8_000 } })
-    const second = await enter()
+    const second = await enter('small')
     if (second.kind !== 'enter' || second.messages[1] === undefined) throw new Error('expected reference context')
     expect(bytes({ content: [], additionalContext: second.messages[1] })).toBe(65_536)
     expect(resolve).toHaveBeenLastCalledWith('selected', 'small', signal)
   })
 
-  it('uses the floor for absent metadata, service, or assembled route and ignores diagnostic assemblies', async () => {
+  it('uses the floor for absent capacity or service and ignores diagnostic assemblies', async () => {
     const { ctx, agent, resolve, prepare, llmFiber } = await setup()
     await ctx.systemPrompt.assemble()
     resolve.mockResolvedValue({ provider: 'seed', id: 'seed', name: 'seed' })
@@ -558,15 +564,10 @@ describe('model-relative reference budgets', () => {
     expect(resolve).toHaveBeenCalledOnce()
     await ctx.systemPrompt.assemble({ agent, scope: agent })
     expect(bytes(await prepare())).toBe(65_536)
-    expect(resolve).toHaveBeenCalledOnce()
-    delete agent.options.model
-    const other = fakeAgent(agent.session)
-    other.options.provider = 'seed'
-    await ctx.sessionReferenceResolver.prepare(other, [], [{ sessionId: SessionId('source') }])
-    expect(resolve).toHaveBeenCalledOnce()
+    expect(resolve).toHaveBeenCalledTimes(2)
     await llmFiber.dispose()
-    other.options.model = 'seed'
-    expect(bytes(await ctx.sessionReferenceResolver.prepare(other, [], [{ sessionId: SessionId('source') }]))).toBe(65_536)
+    expect(bytes(await prepare())).toBe(65_536)
+    expect(resolve).toHaveBeenCalledTimes(2)
   })
 
   it('uses the floor when the real LLM runtime has no adapter for the route', async () => {
@@ -611,18 +612,18 @@ describe('model-relative reference budgets', () => {
     expect(read).not.toHaveBeenCalled()
   })
 
-  it('removes both listeners when the resolver fiber is disposed', async () => {
+  it('removes its pre-step listener when the resolver fiber is disposed', async () => {
     const { ctx, agent, source, resolve, resolverFiber } = await setup()
     const resolver = ctx.sessionReferenceResolver
     await resolverFiber.dispose()
     ctx.systemPrompt.variable('provider', () => 'disposed')
     ctx.systemPrompt.variable('model', () => 'disposed')
     await ctx.systemPrompt.assemble({ agent, scope: agent })
-    await resolver.prepare(agent, [], [{ sessionId: source.id }])
+    await resolver.prepare(agent, [], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
     expect(resolve).toHaveBeenLastCalledWith('seed', 'seed', undefined)
     const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: formatSessionReferenceMention({ sessionId: source.id }) }] })
     const seed = { kind: 'enter' as const, messages: [message] }
-    await expect(agentEvents(ctx, agent).waterfall('agent/pre-step', { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+    await expect(agentEvents(ctx, agent).waterfall('agent/pre-step', { modelSelection: { provider: 'seed', model: 'seed' }, messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
       () => Promise.resolve(seed))).resolves.toBe(seed)
   })
 
@@ -769,27 +770,36 @@ describe('session reference discovery and preparation', () => {
       })])
   })
 
-  it('labels a session no projection answers for by its id, still without a log read', async () => {
+  it('labels a cold seeded session from its cached title and an uncached one by id, without a log read', async () => {
     const ctx = await harness()
     const target = ctx.sessions.create(SessionId('target'), { meta: { cwd: '/same' } })
-    const seeded = {
+    const forked = {
       version: 0,
-      id: SessionId('seeded'),
+      id: SessionId('forked'),
       createdAt: 10,
       cwd: '/same',
       isSeeded: true,
     }
-    // Persisted before the cache was composed: the title lives only in its log.
-    withProjectionCache(ctx, { seeded: 'Unsafe body-free title' })
+    const uncached = { ...forked, id: SessionId('uncached'), createdAt: 20 }
+    // The cache binds the fork's lifecycle by its header alone; the resolver
+    // needs no cut to read it. A session the cache never checkpointed keeps
+    // its title in its log only.
+    withProjectionCache(ctx, { forked: 'Forked title' })
     vi.spyOn(ctx.sessionQuery, 'listSessions').mockResolvedValue([
-      { header: seeded, live: false, persisted: true },
+      { header: forked, live: false, persisted: true },
+      { header: uncached, live: false, persisted: true },
     ] as never)
     const readTitles = vi.spyOn(ctx.sessionQuery, 'readTitleSnapshots')
 
     await expect(ctx.sessionReferenceResolver.listCandidates(fakeAgent(target))).resolves.toEqual([
-      { sessionId: seeded.id, label: seeded.id, displayTitle: seeded.id, cwd: '/same', sameWorkspace: true, createdAt: 10 },
+      { sessionId: forked.id, label: 'Forked title', displayTitle: 'Forked title', cwd: '/same', sameWorkspace: true, createdAt: 10 },
+      { sessionId: uncached.id, label: uncached.id, displayTitle: uncached.id, cwd: '/same', sameWorkspace: true, createdAt: 20 },
     ])
-    // Its own title cannot find it, and discovery still never opens the log.
+    // The cached title finds the fork; the uncached session's own title cannot
+    // find it, and discovery still never opens a log.
+    await expect(ctx.sessionReferenceResolver.listCandidates(fakeAgent(target), 'forked title')).resolves.toEqual([
+      expect.objectContaining({ sessionId: forked.id }),
+    ])
     await expect(ctx.sessionReferenceResolver.listCandidates(fakeAgent(target), 'anything')).resolves.toEqual([])
     expect(readTitles).not.toHaveBeenCalled()
     vi.restoreAllMocks()
@@ -863,13 +873,13 @@ describe('session reference discovery and preparation', () => {
     })
     const plugin = createUserMessage({
       content: [{ type: 'text', text: formatSessionReferenceMention({ sessionId: source.id, label: 'Ignored' }) }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'test' },
     })
     const signal = new AbortController().signal
 
     const decision = await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
-      { messages: [direct, ordinary, plugin], turn: 1, step: 1, signal },
+      { modelSelection: { provider: 'seed', model: 'seed' }, messages: [direct, ordinary, plugin], turn: 1, step: 1, signal },
       () => Promise.resolve({ kind: 'enter' as const, messages: [direct, ordinary, plugin] }),
     )
 
@@ -905,14 +915,14 @@ describe('session reference discovery and preparation', () => {
 
     await expect(agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
-      { messages: [malformed], turn: 1, step: 1, signal },
+      { modelSelection: { provider: 'seed', model: 'seed' }, messages: [malformed], turn: 1, step: 1, signal },
       () => Promise.resolve({ kind: 'reject' as const }),
     )).resolves.toEqual({ kind: 'reject' })
     expect(readSurface).not.toHaveBeenCalled()
 
     await expect(agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
-      { messages: [malformed], turn: 1, step: 1, signal },
+      { modelSelection: { provider: 'seed', model: 'seed' }, messages: [malformed], turn: 1, step: 1, signal },
       () => Promise.resolve({ kind: 'enter' as const, messages: [malformed] }),
     )).rejects.toThrow(/invalid session reference URI/)
   })
@@ -937,7 +947,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'use @source' }],
-      [{ sessionId: source.id, label: 'source' }],
+      [{ sessionId: source.id, label: 'source' }], { provider: 'seed', model: 'seed' },
     )
     expect(prepared.content).toEqual([{ type: 'text', text: 'use @source' }])
     const context = prepared.additionalContext
@@ -989,7 +999,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'use @source' }],
-      [{ sessionId: source.id }],
+      [{ sessionId: source.id }], { provider: 'seed', model: 'seed' },
     )
 
     const captured = prepared.additionalContext?.source
@@ -1007,6 +1017,12 @@ describe('session reference discovery and preparation', () => {
     const ctx = await harness()
     const target = ctx.sessions.create(SessionId('target'))
     const source = ctx.sessions.create(SessionId('source'))
+    source.append('developer/message', {
+      turn: 1, step: 1,
+      message: createDeveloperMessage({
+        content: [{ type: 'tool-removal', toolName: 'private_tool' }], source: { kind: 'test' },
+      }),
+    }, { surfaceOp: 'append' })
     source.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'nested referenced snapshot must not propagate' }],
       source: {
@@ -1024,7 +1040,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'inspect source' }],
-      [{ sessionId: source.id }],
+      [{ sessionId: source.id }], { provider: 'seed', model: 'seed' },
     )
     const context = prepared.additionalContext
     if (context?.content[0]?.type !== 'text') throw new Error('expected text context')
@@ -1050,7 +1066,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'use @source' }],
-      [{ sessionId: source.id }],
+      [{ sessionId: source.id }], { provider: 'seed', model: 'seed' },
     )
     const context = prepared.additionalContext
     if (context?.content[0]?.type !== 'text') throw new Error('expected text context')
@@ -1076,7 +1092,7 @@ describe('session reference discovery and preparation', () => {
     const agent = fakeAgent(target)
     const content = [{ type: 'text' as const, text: 'go' }]
 
-    const withoutReferences = await ctx.sessionReferenceResolver.prepare(agent, content, [])
+    const withoutReferences = await ctx.sessionReferenceResolver.prepare(agent, content, [], { provider: 'seed', model: 'seed' })
     expect(withoutReferences).toEqual({ content })
     expect(withoutReferences.content).not.toBe(content)
 
@@ -1084,28 +1100,28 @@ describe('session reference discovery and preparation', () => {
       { sessionId: one.id, label: 'first' },
       { sessionId: one.id, label: 'ignored duplicate' },
       { sessionId: two.id },
-    ])).resolves.toMatchObject({ additionalContext: { source: { references: [{ label: 'first' }, { label: 'two' }] } } })
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: target.id }]))
+    ], { provider: 'seed', model: 'seed' })).resolves.toMatchObject({ additionalContext: { source: { references: [{ label: 'first' }, { label: 'two' }] } } })
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: target.id }], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_SELF_REFERENCE'))
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [null as never]))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [null as never], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_INVALID_REFERENCE'))
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [1 as never]))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [1 as never], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_INVALID_REFERENCE'))
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: 1 } as never]))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: 1 } as never], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_INVALID_REFERENCE'))
     await expect(ctx.sessionReferenceResolver.prepare(agent, content, [
       { sessionId: one.id }, { sessionId: two.id }, { sessionId: SessionId('three') },
-    ])).rejects.toThrow(expectCode('SESSION_REFERENCE_TOO_MANY'))
+    ], { provider: 'seed', model: 'seed' })).rejects.toThrow(expectCode('SESSION_REFERENCE_TOO_MANY'))
     await expect(ctx.sessionReferenceResolver.prepare(agent, content, [
       { sessionId: one.id }, { sessionId: SessionId('missing') },
-    ])).rejects.toThrow(expectCode('SESSION_REFERENCE_READ_FAILED'))
+    ], { provider: 'seed', model: 'seed' })).rejects.toThrow(expectCode('SESSION_REFERENCE_READ_FAILED'))
 
     const readSurface = vi.spyOn(ctx.sessionQuery, 'readSurface')
     readSurface.mockRejectedValueOnce('non-error read failure')
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }]))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(/non-error read failure/)
     readSurface.mockRejectedValueOnce('non-error signalled read failure')
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], new AbortController().signal))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], { provider: 'seed', model: 'seed' }, new AbortController().signal))
       .rejects.toThrow(/non-error signalled read failure/)
 
     const duringRead = new AbortController()
@@ -1113,7 +1129,7 @@ describe('session reference discovery and preparation', () => {
       duringRead.abort('cancelled during read')
       throw new Error('read interrupted')
     })
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], duringRead.signal))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], { provider: 'seed', model: 'seed' }, duringRead.signal))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_CANCELLED'))
 
     const snapshot = await ctx.sessionQuery.readSurface(one.id)
@@ -1123,7 +1139,7 @@ describe('session reference discovery and preparation', () => {
       return snapshot
     })
     const hangingRead = new AbortController()
-    const pending = ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], hangingRead.signal)
+    const pending = ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], { provider: 'seed', model: 'seed' }, hangingRead.signal)
     await vi.waitFor(() => { expect(releaseRead).toBeTypeOf('function') })
     const cancelledRead = expect(pending).rejects.toThrow(expectCode('SESSION_REFERENCE_CANCELLED'))
     hangingRead.abort('cancelled while storage remained pending')
@@ -1134,7 +1150,7 @@ describe('session reference discovery and preparation', () => {
 
     const abort = new AbortController()
     abort.abort('host cancelled')
-    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], abort.signal))
+    await expect(ctx.sessionReferenceResolver.prepare(agent, content, [{ sessionId: one.id }], { provider: 'seed', model: 'seed' }, abort.signal))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_CANCELLED'))
   })
 
@@ -1161,7 +1177,7 @@ describe('session reference discovery and preparation', () => {
       { surfaceOp: 'append' },
     )
 
-    const prepared = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [{ type: 'text', text: 'go' }], [{ sessionId: source.id }])
+    const prepared = await ctx.sessionReferenceResolver.prepare(fakeAgent(target), [{ type: 'text', text: 'go' }], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' })
     const context = prepared.additionalContext
     if (context?.content[0]?.type !== 'text') throw new Error('expected text context')
     const data = promptData(context.content[0].text) as unknown[]
@@ -1199,7 +1215,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'go' }],
-      sources.map(source => ({ sessionId: source.id })),
+      sources.map(source => ({ sessionId: source.id })), { provider: 'seed', model: 'seed' },
     )
     const context = prepared.additionalContext
     if (context?.content[0]?.type !== 'text') throw new Error('expected text context')
@@ -1214,7 +1230,7 @@ describe('session reference discovery and preparation', () => {
     const ctx = await harness({ maxReferenceBytes: 16 })
     const target = ctx.sessions.create(SessionId('target'))
     const source = ctx.sessions.create(SessionId('source'))
-    await expect(ctx.sessionReferenceResolver.prepare(fakeAgent(target), [{ type: 'text', text: 'go' }], [{ sessionId: source.id }]))
+    await expect(ctx.sessionReferenceResolver.prepare(fakeAgent(target), [{ type: 'text', text: 'go' }], [{ sessionId: source.id }], { provider: 'seed', model: 'seed' }))
       .rejects.toThrow(expectCode('SESSION_REFERENCE_BUDGET_EXCEEDED'))
   })
 
@@ -1234,7 +1250,7 @@ describe('session reference discovery and preparation', () => {
     const prepared = await ctx.sessionReferenceResolver.prepare(
       fakeAgent(target),
       [{ type: 'text', text: 'use @source' }],
-      [{ sessionId: source.id }],
+      [{ sessionId: source.id }], { provider: 'seed', model: 'seed' },
     )
     const context = prepared.additionalContext
     if (context === undefined) throw new Error('expected prepared context')

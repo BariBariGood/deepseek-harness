@@ -337,7 +337,10 @@ describe('profile reconciliation settlement', () => {
     const patches = [{ insert: [{ id: 'missing-plugin', name: './missing.mjs' }] }]
     const ctx = await boot(NAME, join(dir, 'cordis.yml'), patches)
     onTestFinished(() => ctx.fiber.dispose())
-    expect(await reconcileProfilePatches(ctx, patches, NAME)).toEqual(['missing-plugin (./missing.mjs): failed to import'])
+    // Reload diagnostics carry the import error's message without stack frames.
+    const prefix = 'missing-plugin \\(\\./missing\\.mjs\\): failed to import: Error \\[ERR_MODULE_NOT_FOUND\\]'
+    const diagnostic = new RegExp(`^${prefix}: Cannot find module '[^']*missing\\.mjs' imported from [^\\n]*$`, 'u')
+    expect(await reconcileProfilePatches(ctx, patches, NAME)).toEqual([expect.stringMatching(diagnostic)])
   })
 
   it('rejects a context without the launcher root Include', async () => {
@@ -448,7 +451,7 @@ describe('boot with user patches', () => {
     try {
       const noop = [...ctx.loader.entries()].find(entry => entry.options.id === 'noop')
       // The mounted plugin received the interpolated environment value.
-      expect(noop?.fiber?.config).toEqual({ value: 'user-value' })
+      expect(noop?.fiber?.effectiveConfig).toEqual({ value: 'user-value' })
       expect([...ctx.loader.entries()].some(entry => entry.options.id === 'user-extra')).toBe(true)
     } finally {
       await ctx.fiber.dispose()

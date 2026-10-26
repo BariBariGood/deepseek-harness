@@ -10,7 +10,7 @@ import { loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import WorkspaceFiles, { type WorkspaceFileScope } from '@deepseek-ai/dsh-api-workspace-files'
 import OfficeToPdf from '@deepseek-ai/dsh-office-to-pdf'
 import * as DocumentPreview from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview'
-import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
+import type { IndexInjection, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
@@ -19,6 +19,9 @@ import { FsError } from '@deepseek-ai/dsh-fs'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import type { Converter, ConverterOptions } from '@deepseek-ai/libreoffice-kit'
 import { expect, it, onTestFinished, vi } from 'vitest'
+
+/** The Peer an index render speaks for; this listener reads no field of it. */
+const PAGE_PEER = { principal: { kind: 'owner' } } as Parameters<WebServer['renderIndex']>[1]
 
 const kit = vi.hoisted(() => ({ create: vi.fn<(options?: ConverterOptions) => Promise<Converter>>() }))
 vi.mock('@deepseek-ai/libreoffice-kit', () => ({ createConverter: kit.create }))
@@ -60,7 +63,12 @@ it('loads the shipped Office rows with separately patched settings and authorize
     await writeFile(outputPath, pdf)
     return { backend: 'native', missingFonts: ['Missing Serif'] }
   })
-  kit.create.mockReset().mockResolvedValue({ backend: 'native', render, dispose: async () => {} })
+  kit.create.mockReset().mockResolvedValue({
+    backend: 'native', render, dispose: async () => {},
+    renderImages: vi.fn<Converter['renderImages']>().mockRejectedValue(new Error('Unexpected Converter.renderImages call')),
+    convert: vi.fn<Converter['convert']>().mockRejectedValue(new Error('Unexpected Converter.convert call')),
+    recalculate: vi.fn<Converter['recalculate']>().mockRejectedValue(new Error('Unexpected Converter.recalculate call')),
+  })
   ctx.baseUrl = pathToFileURL(directory).href + '/'
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
@@ -87,7 +95,7 @@ it('loads the shipped Office rows with separately patched settings and authorize
   const entries = new Map([...ctx.loader.entries()].map(entry => [entry.options.id, entry]))
   for (const row of configured) await entries.get(row.id)!.fiber!.await()
   const injections: IndexInjection[] = []
-  ctx.emit('webserver/index-inject', injections)
+  ctx.emit('webserver/index-inject', injections, PAGE_PEER)
   expect(injections).toEqual([
     { kind: 'global', name: '__DSH_DOCUMENT_PREVIEW_CONFIG__', value: clientConfig },
   ])
@@ -105,7 +113,7 @@ it('loads the shipped Office rows with separately patched settings and authorize
   const before = session.seq
   const result = await ctx.officeToPdf.render(scope, 'report.docx', 'foreground', signal)
   expect(result).toEqual({ absolutePath: sourcePath, version, offset: 0, eof: true, bytes: pdf.length,
-    data: pdf.toString('base64'), missingFonts: ['Missing Serif'], generation: ctx.officeToPdf.generation })
+    data: Uint8Array.from(pdf), missingFonts: ['Missing Serif'], generation: ctx.officeToPdf.generation })
   const readAgain = vi.spyOn(ctx.fs, 'readBytes')
   expect(await ctx.officeToPdf.render(scope, 'report.docx', 'foreground', signal)).toEqual(result)
   expect(readAgain).not.toHaveBeenCalled()

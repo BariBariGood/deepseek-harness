@@ -1,6 +1,28 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/channel/telegram/README.md
-README.md: 9f26fb1c56c2b72f667eb83109136f06efc016df
-README.zh.md: e1238d8a3fa90dfd2f020092f8907dff3800bd29
+/:
+  en: d857dc8d1c629243
+  zh: c9513bc22dfc5e01
+/deepseek-ai-dsh-channel-telegram:
+  en: 146d7bbdd6e2aa2f
+  zh: ed3de883b61b73f9
+/deepseek-ai-dsh-channel-telegram/summary:
+  en: c197ea9d12d1a003
+  zh: 779d4018a60799d1
+/deepseek-ai-dsh-channel-telegram/table-of-contents:
+  en: 68234281979008ed
+  zh: 42eec6f934b3371a
+/deepseek-ai-dsh-channel-telegram/model-experience:
+  en: 8a13e1fa43b278a5
+  zh: 9ce619cc6448f962
+/deepseek-ai-dsh-channel-telegram/model-experience/kv-cache-effect:
+  en: ca75c51c89c2c9b0
+  zh: 2064958b0754647e
+/deepseek-ai-dsh-channel-telegram/known-limitations-and-deferred-work:
+  en: 4088fc9711d0f1a1
+  zh: 8af7bfec9f45b655
+/deepseek-ai-dsh-channel-telegram/known-limitations-and-deferred-work/dev-note:
+  en: 240aa9897fff0583
+  zh: 2e691fc554ba0042

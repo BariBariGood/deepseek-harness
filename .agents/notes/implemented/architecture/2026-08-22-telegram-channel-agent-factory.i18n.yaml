@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-08-22-telegram-channel-agent-factory.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-22-telegram-channel-agent-factory.md
-2026-08-22-telegram-channel-agent-factory.md: e5227a660e4624db7c5f906ffe59bf54055c439d
-2026-08-22-telegram-channel-agent-factory.zh.md: 2b13d7a31909bf17a0616faeff834f15f6fe78f5
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store:
+  en: 1402bf91adaccdad
+  zh: 66311d0575a646bd
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store/problem:
+  en: bd302fafcdd82b10
+  zh: fd568025f5bb1a95
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store/decision:
+  en: 73047babdf6c59fd
+  zh: b840ba01e257fc5c
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store/testing:
+  en: 81ff0e3303de27ae
+  zh: 69c1f1d3db93303b
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store/consequences:
+  en: 19e87f4121fc3a13
+  zh: 622451baf7d65c2b
+/agent-note-the-telegram-channel-rides-the-agent-factory-not-the-session-store/alternatives-considered:
+  en: cccae3a9432475be
+  zh: f8a3cc335de17622

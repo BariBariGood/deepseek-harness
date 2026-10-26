@@ -1,6 +1,7 @@
 /** Strict JSON validation for SSH helper requests and remote observations. */
 import { z } from 'zod'
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import { SSH_PROTOCOL_VERSION } from './protocol.ts'
 
 /** Identity of one prepared or running process in its owning SSH helper. */
 export type SshProcessId = Branded<'SshProcessId'>
@@ -20,7 +21,12 @@ export const infoSchema = z.object({ version: z.string(), type: z.enum(['file', 
 /** Metadata that preserves a final symlink. */
 export const pathInfoSchema = infoSchema.extend({ type: z.enum(['file', 'directory', 'symlink', 'other']) })
 /** A resolved file-effect policy; the remote helper owns path canonicalization. */
-export const policySchema = z.object({ mode: z.enum(['read-only', 'workspace-write', 'danger-full-access']), workspaceRoot: remotePath, sessionId: z.string().optional() }).strict()
+export const policySchema = z.object({
+  mode: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
+  workspaceRoot: remotePath,
+  additionalWritableRoots: z.array(remotePath).optional(),
+  sessionId: z.string().optional(),
+}).strict()
 /** Complete directory entries. */
 export const entriesSchema = z.array(z.object({ name: z.string(), type: z.enum(['file', 'directory', 'other']), target: targetSchema, version: z.string().optional(), size: z.number().nonnegative().optional() }).strict())
 /** Guarded write intent. */
@@ -54,7 +60,12 @@ export const spawnSchema = z.object({
   }).strict().optional(),
 }).strict().refine(value => (value.stdio === undefined) !== (value.terminal === undefined), 'select ordinary or terminal execution')
 /** Connection handshake binds sockets and workspace to one helper process. */
-export const helloSchema = z.object({ protocol: z.literal(1), hash: z.string().regex(/^[0-9a-f]{64}$/), platform: z.enum(['linux', 'darwin']), nodeVersion: z.string(), node: remotePath, root: remotePath, workspace: remotePath, bootstrapHash: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict()
+export const helloSchema = z.object({
+  protocol: z.literal(SSH_PROTOCOL_VERSION), hash: z.string().regex(/^[0-9a-f]{64}$/),
+  kind: z.enum(['node-script', 'executable']), platform: z.enum(['linux', 'darwin']),
+  nodeVersion: z.string(), executable: remotePath, root: remotePath, workspace: remotePath,
+  bootstrapHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+}).strict()
 /** A prepared process publishes its sockets before target code may execute. */
 export const streamEndpointSchema = z.object({ path: remotePath, capability: z.string().regex(/^[0-9a-f]{64}$/) }).strict()
 /** A stream capability reaches only the authenticated SSH client and its helper. */

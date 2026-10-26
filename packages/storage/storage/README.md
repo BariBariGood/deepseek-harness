@@ -76,7 +76,7 @@ The hub is a pure registration table with two faces, designed so backends and da
 
 ### The backend contract
 
-[`src/backend.ts`](src/backend.ts) is the normative contract for backend implementers, checked clause by clause by the shared conformance suite in `tests/contract.ts`. A backend owns exactly one medium and exposes optional data-shape facets; `kv` is the only facet, and opening a unit yields a versioned, globally-singleton schema handle whose single calls are atomic and durable once resolved. Unit and table names must match `UNIT_NAME_RE`; record keys are arbitrary strings that never reach file paths. The unit does not serialize concurrent writes — ordering belongs to the caller — and a stored version differing from the descriptor rejects `version-mismatch` (no migration).
+[`src/backend.ts`](src/backend.ts) is the normative contract for backend implementers, checked for the shared clauses by the shared conformance suite in `tests/contract.ts`. A backend owns exactly one medium and exposes optional data-shape facets; `kv` is the only facet, and opening a unit yields a versioned, globally-singleton schema handle whose single calls are atomic, with durability scoped per layout. Unit and table names must match `UNIT_NAME_RE`; record keys are opaque in the `single` layout and path-safe segments in the `per-record` layout. The unit does not serialize concurrent writes — ordering belongs to the caller — and a stored version differing from the descriptor rejects `version-mismatch` (no migration).
 
 ### Source map
 
@@ -86,7 +86,6 @@ The hub is a pure registration table with two faces, designed so backends and da
 | [`src/registry.ts`](src/registry.ts) | `BackendRegistry`: name → backend table, registration disposers |
 | [`src/backend.ts`](src/backend.ts) | The backend contract: facets, units, `UNIT_NAME_RE` |
 | [`src/error.ts`](src/error.ts) | `StorageError` codes shared by the hub and every backend |
-| — | No runtime invariant companion is published; the hub is a pure registration table (names → backends, forms → facilities) whose consistency is fully enforced at the call sites (duplicate/missing entries fail loud synchronously); it owns no event stream or mutable medium to cross-check. |
 | [`tests/contract.ts`](tests/contract.ts) | The shared conformance suite run against each backend |
 
 </details>

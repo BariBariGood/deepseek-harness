@@ -11,8 +11,12 @@
  *
  * @module dsh-permission-presets
  */
+import type {} from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-agent'
 
-import { Context } from '@deepseek-ai/cordis'
+import type { Volatile } from '@deepseek-ai/cordis'
+
+import { Context, Service } from '@deepseek-ai/cordis'
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
 import z from '@deepseek-ai/schemastery'
 import { z as zod } from 'zod'
@@ -25,9 +29,8 @@ import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-shell'
 import type { ApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import { APPROVAL_POLICIES, setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
-import type {} from '@deepseek-ai/dsh-settings'
 // Type-only: resolves the required projection service and optional settings/command children.
-import type {} from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { PermissionCatalog, PermissionSelection, PresetOption } from './types.ts'
 
@@ -36,13 +39,6 @@ export type * from './types.ts'
 declare module '@deepseek-ai/cordis' {
   interface Context {
     permissionPresets: PermissionPresetService
-  }
-}
-
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    /** Latest logged permission overrides and constructor-seed status. */
-    permissions: PermissionProjectionState
   }
 }
 
@@ -79,14 +75,15 @@ export const CUSTOM_PRESET = 'custom'
 /** Canonical identity of the experimental per-call review preset. */
 export const AUTO_PRESET = 'auto'
 
-/** Fixed execution bundle for the live Auto integration. */
+/**
+ * Fixed execution bundle for the live Auto integration. `ask` routes reviewer
+ * denials to the user; a stored Auto identity also matches `never`, which a
+ * delegated child pins so its reviewer denials stay final.
+ */
 const AUTO_PRESET_SPEC: PresetSpec = {
   sandbox: 'danger-full-access',
-  approval: 'never',
+  approval: 'ask',
 }
-
-/** Settings namespace carrying the default for future sessions. */
-export const PERMISSION_SETTINGS_NAMESPACE = 'permission'
 
 /**
  * The projection unit's knob state: the last seen value of each knob event,
@@ -160,12 +157,12 @@ export interface Config {
    * never). The names `custom` and `auto` are reserved for derived state and
    * the Auto review integration respectively.
    */
-  presets?: Record<string, PresetSpec>
+  presets: Record<string, PresetSpec>
   /**
    * Default for new sessions. When omitted, the preset matching the composed
    * sandbox and approval defaults is used.
    */
-  defaultPreset?: string
+  defaultPreset: Volatile<string | undefined>
 }
 
 /**
@@ -176,7 +173,7 @@ export interface Config {
  */
 export class PermissionPresetService extends TypertRemoteService {
   // Inline schema call: the config catalog walks `static Config` statically.
-  static Config: z<Config> = z.object({
+  static Config = z.object({
     presets: z.dict(z.object({
       sandbox: z.union(SANDBOX_MODES as SandboxMode[]).required(),
       approval: z.union(APPROVAL_POLICIES as ApprovalPolicy[]).required(),
@@ -192,19 +189,23 @@ export class PermissionPresetService extends TypertRemoteService {
         name: 'danger-full-access', description: 'Full file access without approval prompts.',
       },
     }),
-    defaultPreset: z.string(),
+    defaultPreset: z.string().volatile(),
   })
 
-  static inject = ['shell', 'approval', 'sessions', 'sessionProjections']
+  static inject = ['shell', 'approval', 'sessions', 'agents', 'sessionProjections']
 
   private readonly presets: Record<string, PresetSpec>
   private autoAdmit: (() => void) | undefined
   private defaultSettings: () => PermissionSettings
 
+  private permissionProjectionHandle: ProjectionHandle<PermissionProjectionState> | undefined
+
   constructor(ctx: Context, config: Config) {
     super(ctx, 'permissionPresets')
+
+    ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
     // The schema defaulted the table — the cast records that runtime fact.
-    this.presets = config.presets as Record<string, PresetSpec>
+    this.presets = config.presets
     if (CUSTOM_PRESET in this.presets) {
       throw new Error(`permission: "${CUSTOM_PRESET}" is reserved for the derived not-a-preset state and cannot name a table entry`)
     }
@@ -215,36 +216,27 @@ export class PermissionPresetService extends TypertRemoteService {
       throw new Error('permission: the mounted bash executor does not confine (no sandboxMode) — presets bundle a sandbox mode, so composing this plugin over an unconfined executor is a misconfiguration')
     }
     const inferredDefault = this.derive(EMPTY_KNOBS)
-    const defaultPreset = config.defaultPreset ?? inferredDefault
+    const defaultPreset = config.defaultPreset.get() ?? inferredDefault
     if (defaultPreset === CUSTOM_PRESET) {
       throw new Error('permission: composed sandbox and approval defaults match no preset; configure defaultPreset explicitly')
     }
     this.resolve(defaultPreset)
-    const baseSettings: PermissionSettings = { defaultPreset }
-    this.defaultSettings = () => baseSettings
-    const presetChoices = Object.keys(this.presets).map((name) => {
-      const choice = z.const(name)
-      const label = this.presets[name]?.name
-      return label === undefined ? choice : choice.description(label)
-    })
-    const settingsSchema: z<PermissionSettings> = z.object({
-      defaultPreset: z.union(presetChoices).required(),
-    })
-    ctx.inject(['settings'], (settingsCtx) => {
-      settingsCtx.settings.installSection(ctx, PERMISSION_SETTINGS_NAMESPACE, settingsSchema, baseSettings, {
-        setSource: (current) => {
-          this.defaultSettings = current
-        },
-        // The source thunk reads the latest scope snapshot at session creation;
-        // no process-level registration needs replacement on change.
-        onChange: () => {},
-      })
-    })
+    this.defaultSettings = () => {
+      const defaultPreset = config.defaultPreset.get() ?? inferredDefault
+      if (!Object.hasOwn(this.presets, defaultPreset)) throw new Error(`permission: unknown default preset "${defaultPreset}"`)
+      return { defaultPreset }
+    }
+  }
 
+  protected async [Service.init](): Promise<void> {
+    const ctx = this.ctx
+    ctx.on('agent/created', ({ agent }) => {
+      this.pinInitialPermission(agent.session)
+    }, { prepend: true })
     const selectionSchema = zod.object({
       currentValue: zod.string().min(1),
     }) as zod.ZodType<PermissionSelection>
-    ctx.sessionProjections.register({
+    this.permissionProjectionHandle = await ctx.sessionProjections.register({
       key: 'permissions',
       stateVersion: 2,
       stateSchema: permissionStateSchema,
@@ -252,11 +244,8 @@ export class PermissionPresetService extends TypertRemoteService {
       apply: applyPermissionEvent,
       wire: { viewSchema: selectionSchema, view: state => ({ currentValue: this.derive(state) }) },
     })
-    ctx.on('session/created', (session) => {
-      this.pinInitialPermission(session)
-    })
-    for (const session of ctx.sessions.list()) {
-      this.pinInitialPermission(session)
+    for (const agent of ctx.agents.list()) {
+      this.pinInitialPermission(agent.session)
     }
 
     // The /permission command: the one write path a web client uses (the
@@ -301,7 +290,11 @@ export class PermissionPresetService extends TypertRemoteService {
    */
   @Remote('catalog')
   catalog(): PermissionCatalog {
-    return { options: this.names.map(name => this.optionOf(name)) }
+    return {
+      options: this.names.map(name => this.optionOf(name)),
+      defaultOptions: Object.keys(this.presets).map(name => this.optionOf(name)),
+      defaultPreset: this.defaultSettings().defaultPreset,
+    }
   }
 
   /**
@@ -332,14 +325,16 @@ export class PermissionPresetService extends TypertRemoteService {
   }
 
   private permissionState(session: Session): PermissionProjectionState {
-    const state = this.ctx.sessionProjections.stateOf(session, 'permissions')
-    if (state === undefined) throw new Error('permission: permissions session projection is not registered')
-    return state
+    if (this.permissionProjectionHandle === undefined) {
+      throw new Error('permission: presets are not ready; await plugin activation before creating or restoring a session')
+    }
+    return this.permissionProjectionHandle.stateOf(session)
   }
 
   /**
    * Resolve the preset matching the effective knob values. A still-matching
-   * last selection wins shared-bundle ties; otherwise the first configured
+   * last selection wins shared-bundle ties, and a still-selected Auto also
+   * matches the `never` approval policy; otherwise the first configured
    * match wins. Returns
    * {@link CUSTOM_PRESET} when no available preset matches.
    * @param session - the session whose knob state is read.
@@ -357,6 +352,7 @@ export class PermissionPresetService extends TypertRemoteService {
     if (state.preset !== null) {
       const spec = this.specOf(state.preset)
       if (spec !== undefined && matches(spec)) return state.preset
+      if (state.preset === AUTO_PRESET && spec?.sandbox === sandbox && approval === 'never') return AUTO_PRESET
     }
     for (const [name, spec] of Object.entries(this.presets)) {
       if (matches(spec)) return name
@@ -422,12 +418,13 @@ export class PermissionPresetService extends TypertRemoteService {
   }
 
   /**
-   * Fill every missing permission fact before a session is published. A
+   * Fill every missing permission fact during Agent creation. A
    * genuinely fresh session uses the current user default; seeded or partially
    * initialized sessions preserve their effective knob values and only gain
    * the missing durable facts. A stored Auto identity requires its live
    * integration and passes its admission check before
-   * publication.
+   * creation completes. Creation while the permission reader is still registering
+   * fails so the publishing caller can roll back.
    */
   private pinInitialPermission(session: Session): void {
     const state = this.permissionState(session)

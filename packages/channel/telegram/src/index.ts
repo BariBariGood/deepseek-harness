@@ -15,7 +15,6 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 // Type-only: pulls the Context merge that types ctx.get('tools') in the setup window.
 import type {} from '@deepseek-ai/dsh-tools'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import z from '@deepseek-ai/schemastery'
@@ -130,12 +129,11 @@ export function apply(ctx: Context, config: Config): void {
             const fallback = defaultModel === undefined ? { provider: '', model: '' } : defaultModel.currentSelection()
             const provider = selection?.provider ?? fallback.provider
             const model = selection?.model ?? fallback.model
-            // The selection ref is the relay's live /model handle: installed in
-            // the agent's setup window so a mid-chat switch re-routes the next
-            // step without recreating the session.
-            const selectionRef: ModelSelectionRef = { current: { provider, model }, assembled: undefined }
+            // The Agent's durable model service is the relay's /model handle:
+            // the switch listener installs in the setup window so a mid-chat
+            // switch re-routes the next step without recreating the session.
             const composedSetup = async (agentCtx: Context): Promise<void> => {
-              installModelSelection(agentCtx, selectionRef)
+              installModelSelection(agentCtx)
               if (setup !== undefined) await setup(agentCtx)
             }
             const handle = await ctx.agents.create({
@@ -144,7 +142,7 @@ export function apply(ctx: Context, config: Config): void {
               agentOptions: { provider, model },
               setup: composedSetup,
             })
-            return { agent: Object.assign(handle.agent, { selectionRef }) }
+            return { agent: handle.agent }
           },
           getLiveAgent: sessionId => ctx.agents.get(sessionId),
           listModels: async () => {

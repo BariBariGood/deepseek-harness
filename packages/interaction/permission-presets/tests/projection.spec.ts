@@ -9,23 +9,28 @@
  * registry, and removes the projection key on unload (HMR safety).
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import PermissionPresetService from '@deepseek-ai/dsh-permission-presets'
 import { AUTO_PRESET } from '@deepseek-ai/dsh-permission-presets'
-import type { Config } from '@deepseek-ai/dsh-permission-presets'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
+import { omitsGeneratedPage } from '../../../settings/settings/tests/live-config.ts'
 
-async function harness(options: { withPermission?: boolean; config?: Config } = {}): Promise<{ ctx: Context; session: Session }> {
-  const ctx = new Context()
-  await ctx.plugin(SessionStore)
-  await ctx.plugin(SessionProjectionRegistry)
+async function harness(options: {
+  withPermission?: boolean
+  config?: NonNullable<Parameters<typeof PermissionPresetService.Config>[0]>
+  ctx?: Context
+} = {}): Promise<{ ctx: Context; session: Session }> {
+  const ctx = options.ctx ?? new Context()
+  onTestFinished(() => ctx.fiber.dispose())
+  await mountAgentLoopTestDependencies(ctx)
+  await mountAgentLoopTestHarness(ctx)
   await ctx.plugin(CommandRuntime)
   ctx.provide('shell', {
     sandboxMode: 'workspace-write',
@@ -35,7 +40,8 @@ async function harness(options: { withPermission?: boolean; config?: Config } = 
   })
   await ctx.plugin(ApprovalService)
   if (options.withPermission !== false) await ctx.plugin(PermissionPresetService, options.config ?? {})
-  return { ctx, session: ctx.sessions.create(SessionId('perm-projected')) }
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('perm-projected') })
+  return { ctx, session: agent.session }
 }
 
 /** Mint a scoped agent over a live session (the command executor's addressing shape). */
@@ -163,7 +169,7 @@ describe('/permission command', () => {
     expect(inject.mock.calls[0]?.[0]).toMatchObject({
       content: [{
         type: 'text',
-        text: 'The approval policy changed from "ask" to "never" (changed by the user).',
+        text: 'The user changed the approval policy from "ask the user for approval" to "never ask the user for approval".',
       }],
     })
     const run = session.snapshotEvents().find(event => event.type === 'command/run')
@@ -198,3 +204,8 @@ describe('/permission command', () => {
       event.type !== 'command/run' && event.type !== 'command/done')).toEqual(before)
   })
 })
+
+it('keeps its own instance off the generated Settings pages', () => omitsGeneratedPage(async (ctx) => {
+  await harness({ ctx, withPermission: false })
+  return ctx.plugin(PermissionPresetService, {})
+}))

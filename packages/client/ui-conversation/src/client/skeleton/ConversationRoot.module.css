@@ -10,9 +10,12 @@
 /* 76px with its rule: the height of the Sidebar's tab strip and header row
    (ui-dockkit `.tabStrip` 38px + the pane header's 38px), so the two rules
    meet at the column edge. The rows add up to it — 10px top inset, the 30px
-   title row, the tab strip's 10px margin, a 16px tab line, and its 9px bottom
-   inset — so no row below may grow past its figure. */
+   title row, the tab strip's 10px margin, and a 25px view row. When the views
+   and the More launcher do not fit on one row, the row wraps and the header
+   grows past 76px. */
 .header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   flex: none;
   box-sizing: border-box;
   min-height: 76px;
@@ -20,9 +23,15 @@
   border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
 
+.header:where(:not(:has(.tabs))) {
+  min-height: 0;
+  padding-bottom: 10px;
+}
+
 /* Blank Sessions retain navigation controls without conversation title or tabs. */
 .headerBlank {
   min-height: 0;
+  padding-bottom: 0;
   border-bottom: none;
 }
 
@@ -30,14 +39,22 @@
   margin-left: auto;
 }
 
-/* macOS hiddenInset titlebar: the title row doubles as the window drag
-   region; interactive children opt out. */
-:global([data-platform='darwin']) .titleRow {
-  -webkit-app-region: drag;
+/* Only the macOS titlebar needs reserved drag space before a Session exists. */
+:global(html:not([data-platform='darwin'])) .headerSessionless {
+  padding-top: 0;
 }
 
-:global([data-platform='darwin']) .titleRow button,
-:global([data-platform='darwin']) .titleRow a,
+:global(html:not([data-platform='darwin'])) .headerSessionless .titleRow {
+  min-height: 0;
+}
+
+/* macOS hiddenInset titlebar: the header block owns the window drag over its
+   own box — title row plus the view tab strip, so the draggable geometry is the
+   header's geometry and no frame band has to match its height. The header marks
+   itself `data-window-drag` (ConversationHeader); below it the title-row clusters
+   subtract their whole boxes, and individual controls are covered by the base.css
+   interactive-element rule. A covering overlay lives beside #root
+   (ui-settings-general), which puts it after this row in document order. */
 :global([data-platform='darwin']) .headerLeading,
 :global([data-platform='darwin']) .headerActions,
 :global([data-platform='darwin']) .headerUtilities,
@@ -46,10 +63,22 @@
 }
 
 .titleRow {
+  grid-column: 2;
+  /* Anonymous inline-size container (CSS modules hash container-names per
+     module, so occupants match the nearest container): header occupants such
+     as the preset label and slot actions shed their text at row-width
+     breakpoints. The minmax(0, 1fr) column sizes the row, so inline-size
+     containment cannot collapse it. */
+  container-type: inline-size;
   display: flex;
   align-items: center;
   gap: 0;
   min-height: 30px;
+  /* Clears the frame's window-chrome band (traffic lights + shell.leading
+     controls, ui-layout AppFrame) when it is published; the header already
+     pads 20px of it. Zero everywhere else (the fallback makes the max
+     negative). */
+  padding-inline-start: max(0px, calc(var(--dsh-frame-leading-clearance, 0px) - 20px));
 }
 
 .titleCluster {
@@ -60,19 +89,15 @@
   min-width: 0;
 }
 
-/* Leading seat before the breadcrumbs; laid out only while its occupant
-   renders something, and the occupant owns its own trailing gap (a CSS-hidden
-   occupant keeps the seat non-empty, so a seat-owned margin would push the
-   breadcrumbs while nothing shows). */
+/* The auto grid column collapses with an empty or CSS-hidden occupant.
+   The occupant owns its trailing gap so hidden controls reserve no space. */
 .headerLeading {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex: none;
   align-items: center;
   gap: 8px;
-}
-
-.headerLeading:empty {
-  display: none;
 }
 
 .crumbs {
@@ -99,11 +124,12 @@
 }
 
 .crumb {
+  display: inline-block;
   max-width: 220px;
   overflow: hidden;
   padding: 4px 8px;
   border: none;
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   font-size: 14px;
   line-height: 20px;
@@ -118,8 +144,10 @@
   line-height: 18px;
 }
 
-.crumb:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  button.crumb:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .crumbCurrent {
@@ -163,23 +191,44 @@
   display: none;
 }
 
-/* figma Tab_Group 34:11441: 35px strip, gap 36, pad-left 8, tabs bottom-aligned.
-   Positioned above the header's own paint, so the active bar covers the rule. */
+/* The tab row sits above the header paint so the active bar covers its rule. */
 .tabs {
+  grid-column: 1 / -1;
   position: relative;
   z-index: 1;
   display: flex;
-  gap: 36px;
+  gap: 16px 20px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  align-items: flex-start;
+  flex-wrap: wrap;
   margin-top: 10px;
   padding-left: 8px;
 }
 
-/* figma .Tab 34:11442: 13/16 text (figma wt510, rendered 500). The 2px bar
-   reaches 1px past the tab's box to end flush with the header's bottom edge,
-   sitting over the rule. */
+.viewTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
+  min-width: 0;
+  min-height: 25px;
+}
+
+/* The 16px text line retains 9px below it. The press target extends 10px
+   above the text into the strip's top margin and 10px to each side, matching
+   the inline padding of the Sidebar tab chips (ui-dockkit `.tab`); negative
+   margins keep the layout box at its 25px row and text width. The active bar
+   spans the text and reaches 1px past the tab box to sit over the header
+   rule. */
 .tab {
+  --dsh-tab-hit-inline: 10px;
+
   position: relative;
-  padding: 0 0 9px;
+  box-sizing: border-box;
+  min-height: 35px;
+  margin: -10px calc(-1 * var(--dsh-tab-hit-inline)) 0;
+  padding: 10px var(--dsh-tab-hit-inline) 9px;
   border: none;
   background: transparent;
   font-size: 13px;
@@ -192,9 +241,9 @@
 .tab::after {
   content: '';
   position: absolute;
-  right: 0;
+  right: var(--dsh-tab-hit-inline);
   bottom: -1px;
-  left: 0;
+  left: var(--dsh-tab-hit-inline);
   height: 2px;
   border-radius: 2px;
   background: transparent;
@@ -209,6 +258,32 @@
 
 .tabActive::after {
   background: var(--dsw-alias-state-business-primary);
+}
+
+/* The More launcher centers its 22px box on the tab's 16px text line. */
+.viewsMoreAnchor {
+  flex: none;
+}
+
+.viewsMore {
+  width: 22px;
+  height: 22px;
+  margin-top: -3px;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.viewsMoreActive { color: var(--dsw-alias-state-business-primary); }
+
+.tabLabel { display: block; max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.viewsMore[aria-expanded='true'] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.viewsMoreMenu {
+  width: 288px;
+  max-width: calc(100vw - 24px);
 }
 
 .viewArea {
@@ -252,14 +327,14 @@
   left: calc(50% + var(--dsh-chat-content-width) / 2 + 24px);
 }
 
-/* The glow: a short 2px bar riding the pointer's Y, centered in the strip
+/* The glow: a short 2px bar following the captured pointer's Y, centered in the strip
    (29px from the content column), not a full-height rule — a 16px solid core
    centered on the pointer
-   (published by pointermove as --dsh-width-handle-pointer-y), fading to
+   (published during drag as --dsh-width-handle-pointer-y), fading to
    transparent over 28px each side (72px total). A solid CORE, not a single
    solid stop: a lone peak washes out over the fade. The resting scrollbar
    tint keeps this secondary affordance quiet in both themes. Before the first
-   move the fallback centers the glow at 50% height. */
+   drag move the fallback centers the glow at 50% height; hover leaves its position unchanged. */
 .widthHandle::after {
   content: '';
   position: absolute;
@@ -286,9 +361,14 @@
   left: 4px;
 }
 
-.widthHandle:hover::after,
 .widthHandle[data-dragging]::after {
   opacity: 1;
+}
+
+@media (hover: hover) {
+  .widthHandle:hover::after {
+    opacity: 1;
+  }
 }
 
 /* A drag starts above the composer band. Pointer capture keeps it active when
@@ -501,6 +581,20 @@
      closer to the card's inner controls below; right keeps the trailing
      preset seat off the card edge. */
   padding: 0 16px 0 20px;
+}
+
+/* Plugin options share the row, pushed to its right edge. */
+.heroOptions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.heroOptions:empty {
+  display: none;
 }
 
 /* Hero: the composer sits inside the session scroll body; center there so

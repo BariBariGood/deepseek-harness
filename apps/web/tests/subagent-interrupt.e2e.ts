@@ -43,8 +43,8 @@ async function remote<T>(
 }
 
 /** POST one generated Session Remote unary through the API Gateway carrier. */
-function sessionRemote<T>(scaffold: WebScaffold, method: string, request: unknown): Promise<RpcResult<T>> {
-  return remote<T>(scaffold, `session/${method}`, { request })
+async function sessionRemote<T>(scaffold: WebScaffold, method: string, request: unknown): Promise<RpcResult<T>> {
+  return await remote<T>(scaffold, `session/${method}`, { request })
 }
 
 /** Poll a synchronous condition (hook-safe; expect.poll is test-body only). */
@@ -108,7 +108,8 @@ describe.skipIf(MODE === 'record')('web e2e: subagents/interruptByParent over th
     const parent = scaffold.ctx.agents.get(parentId)
     if (parent === undefined) throw new Error('created parent session did not publish a live Agent')
 
-    const started = await scaffold.ctx.subagents.startContinuable({
+    const started = await scaffold.ctx.subagents.startActivation({
+      delivery: 'parent',
       provider: 'spawn',
       label: 'event-sourcing researcher',
       signal: new AbortController().signal,

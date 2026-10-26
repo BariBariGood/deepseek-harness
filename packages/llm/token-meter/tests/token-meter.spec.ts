@@ -1,39 +1,40 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { AssistantStreamAccumulator, createUserMessage, createSystemMessage, ToolCallId, createMessage } from '@deepseek-ai/dsh-llm'
+import { AssistantStreamAccumulator, createAssistantMessage, createUserMessage, createSystemMessage, ToolCallId, createMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, Message, TokenUsage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, SessionSeq, canonicalHeader } from '@deepseek-ai/dsh-session'
 import type { EpochHeader, SessionEvent, SessionSeq as SessionSeqType } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import type { TokenMeasurement, TokenMeterConfig } from '@deepseek-ai/dsh-token-meter'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test': { kind: 'test' } & ContextFormed
+  }
+}
+
 function header(model: string, extras: Omit<EpochHeader, 'config'> = {}): EpochHeader {
   return canonicalHeader({ config: { provider: 'mock', model }, ...extras })
 }
 
-function textMessage(text: string, role: Message['role'] = 'user'): Message {
-  return createMessage({
-    role,
-    content: [{ type: 'text', text }],
-    source: role === 'assistant'
-      ? { kind: 'model', provider: 'mock', model: 'mock' }
-      : { kind: 'user' },
-  })
+function textMessage(text: string, role: 'user' | 'assistant' = 'user'): Message {
+  return role === 'assistant'
+    ? createAssistantMessage({ content: [{ type: 'text', text }], source: { provider: 'mock', model: 'mock' } })
+    : createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 }
 
 function appendHeader(session: Session, value: EpochHeader): void {
   session.append('request/header', { header: value, reason: 'initial' })
 }
 
-const SYSTEM_PLUGIN = '@deepseek-ai/dsh-system-prompt'
-
 /** Append the rendered system prompt as surface node 0, the way the loop does. */
 function appendSystem(session: Session, text: string): SessionSeqType {
   return session.append('system/message', {
     turn: 1,
     step: 1,
-    message: createSystemMessage(text, SYSTEM_PLUGIN),
+    message: createSystemMessage(text),
   }, { surfaceOp: 'append' }).seq
 }
 
@@ -42,7 +43,7 @@ function replaceSystem(session: Session, node: SessionSeqType, text: string): Se
   return session.append('system/message', {
     turn: 1,
     step: 1,
-    message: createSystemMessage(text, SYSTEM_PLUGIN),
+    message: createSystemMessage(text),
   }, { surfaceOp: { op: 'replace', startSeq: node, endSeq: node }, sourceEventSeqs: [node] }).seq
 }
 
@@ -105,8 +106,7 @@ function appendSuccessfulCall(
 
 function meter(config: TokenMeterConfig = {}): TokenMeter {
   const ctx = new Context()
-  // The registry is a required injection of the service (its three projection
-  // units register in the constructor); mount it synchronously.
+  // Pure measurement tests use the service without mounting its projection contributions.
   new SessionProjectionRegistry(ctx)
   return new TokenMeter(ctx, config)
 }
@@ -125,7 +125,7 @@ describe('TokenMeter configuration and registration', () => {
   it.each(['models', 'contextWindow', 'contextWidow'])(
     'rejects stale or unknown top-level config key %s',
     (key) => {
-      expect(() => meter({ [key]: {} } as unknown as TokenMeterConfig))
+      expect(() => meter({ [key]: {} } as TokenMeterConfig))
         .toThrow(`TokenMeterConfig: unknown key "${key}"`)
     },
   )
@@ -136,8 +136,13 @@ describe('TokenMeter configuration and registration', () => {
     await ctx.plugin(SessionProjectionRegistry)
     const fiber = await ctx.plugin(TokenMeter)
     expect(ctx.get('tokenMeter')).toBeInstanceOf(TokenMeter)
+    const session = ctx.sessions.create()
+    expect(Object.keys(ctx.sessionProjections.checkpoint(session)).sort())
+      .toEqual(['contextBreakdown', 'contextPressure', 'tokenMeasurement', 'tokenUsage'])
     await fiber.dispose()
     expect(ctx.get('tokenMeter')).toBeUndefined()
+    expect(ctx.sessionProjections.checkpoint(session)).toEqual({})
+    await ctx.fiber.dispose()
   })
 })
 
@@ -148,17 +153,12 @@ describe('TokenMeter pricing', () => {
       { type: 'text', text: 'abcd' },
       { type: 'reasoning', text: 'ab' },
       { type: 'tool-call', id: ToolCallId('c'), name: 'read', arguments: '{"x":1}' },
-      {
-        type: 'tool-result',
-        toolCallId: ToolCallId('c'),
-        content: [{ type: 'text', text: 'xy' }],
-        isError: false,
-      },
+      { type: 'text', text: 'xy' },
       { type: 'future-block', payload: 'abcd' } as unknown as ContentBlock,
     ]
     const estimated = service.estimateMessage(createMessage({
       role: 'assistant', content: blocks,
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'model', provider: 'mock', model: 'mock' },
     }))
     expect(estimated).toBeGreaterThan(30)
     expect(service.estimateMessage(textMessage('abcd'))).toBe(9)
@@ -330,7 +330,7 @@ describe('replay anchors and surface folds', () => {
     const assistant = anchored.nodes[1]!.seq
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'short' }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'test' },
     }), {
       surfaceOp: { op: 'replace', startSeq: assistant, endSeq: assistant },
       sourceEventSeqs: [assistant],
@@ -432,7 +432,7 @@ describe('replay anchors and surface folds', () => {
     const first = seeded.surface.nodes[0]!
     seeded.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'replacement' }],
-      source: { kind: 'plugin', plugin: 'test' },
+      source: { kind: 'test' },
     }), { surfaceOp: { op: 'replace', startSeq: first, endSeq: first }, sourceEventSeqs: [first] })
     const after = service.measure(seeded)
     expect(after.nodes).toHaveLength(2)

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach } from 'vitest'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
+import { StaticRemoteAccess } from '@deepseek-ai/dsh-client-test-runtime'
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import { apply, inject } from '../src/client/index.ts'
 import { NativeDirectoryFlow } from '../src/client/flow.ts'
@@ -14,23 +15,25 @@ const desktopIpc = await vi.hoisted(async () => {
   const path = await import('node:path')
   // Electron belongs to the Desktop app; resolve its mock from that workspace.
   const electron = createRequire(path.resolve(import.meta.dirname, '../../../../apps/desktop/package.json')).resolve('electron')
-  return { invoke: vi.fn(), electron }
+  return { invoke: vi.fn(), on: vi.fn(), electron }
 })
 vi.mock(desktopIpc.electron, () => ({
-  ipcRenderer: { invoke: desktopIpc.invoke },
+  ipcRenderer: { invoke: desktopIpc.invoke, on: desktopIpc.on },
   contextBridge: { exposeInMainWorld: (name: string, value: unknown) => { vi.stubGlobal(name, value) } },
 }))
-vi.mock('../../../../apps/desktop/src/preload-platform.ts', () => ({ markDocumentPlatform: vi.fn() }))
+vi.mock('../../../../apps/desktop/src/preload-platform.ts', () => ({ markDocumentPlatform: vi.fn(), syncWindowFullscreen: vi.fn() }))
 vi.mock('../../../../apps/desktop/src/preload-theme.ts', () => ({ syncNativeTheme: vi.fn() }))
 vi.mock('../../../../apps/desktop/src/preload-windows.ts', () => ({ syncWindowsAppearance: vi.fn() }))
+vi.mock('../../../../apps/desktop/src/preload-mandatory-overlay.ts', () => ({ installMandatoryUpdateOverlay: vi.fn() }))
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); desktopIpc.invoke.mockReset(); desktopIpc.on.mockReset() })
 
 const HOLES = ['conversation.hero.workspace.directoryFlow', 'sidebar.workspaces.directoryFlow'] as const
 
-async function bench() {
+async function bench(allows: (action: string) => boolean = () => true) {
   const ctx = new Context()
   await ctx.plugin(SlotRegistry).await()
+  new StaticRemoteAccess(ctx, allows)
   const pickDirectory = vi.fn(async (): Promise<string | null> => '/tmp/picked')
   ctx.provide('uiWorkspace', { pickDirectory } as never)
   const slots = ctx.get('slots') as SlotRegistry
@@ -51,7 +54,19 @@ function owner(overrides: Partial<DirectoryFlowOwnerProps> = {}): DirectoryFlowO
 
 describe('directory-picker-native client half', () => {
   it('declares the services it drives', () => {
-    expect(inject).toEqual(['slots', 'uiWorkspace'])
+    expect(inject).toEqual(['slots', 'uiWorkspace', 'remoteAccess'])
+  })
+
+  it('fills no directory flow while the current Peer may not open the Host chooser', async () => {
+    const allows = vi.fn(() => false)
+    const b = await bench(allows)
+    b.declare()
+    const fiber = b.ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    expect(allows).toHaveBeenCalledWith('directoryPicker/pick')
+    for (const hole of HOLES) expect(b.slots.entries(hole)).toEqual([])
+    await fiber.dispose()
+    await b.ctx.fiber.dispose()
   })
 
   it('fills both directory-flow holes for declarations before or after apply, and leaves with its fiber', async () => {
@@ -164,7 +179,9 @@ describe('directory-picker-native client half', () => {
     expect(b.pickDirectory).toHaveBeenCalledOnce()
   })
 
-  it('consumes the actual Desktop preload bridge and sends its directory-pick IPC', async () => {
+  it.each(['win32', 'darwin'] as const)('consumes the actual Desktop preload directory bridge on %s', async (platform) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform)
+    vi.resetModules()
     vi.stubGlobal('location', new URL('dsh-app://app/'))
     // Desktop's preload is typechecked by its own compiler program.
     const preload = '../../../../apps/desktop/src/preload-app.ts'

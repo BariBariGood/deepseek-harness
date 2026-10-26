@@ -1,10 +1,12 @@
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -12,10 +14,16 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence'
 
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import AgentLoop, { CONFIGURED_AGENT_IDENTITIES_KEY } from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'test': { kind: 'test' } & ContextFormed
+  }
+}
 
 const dirs: string[] = []
 afterEach(async () => { for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }) })
@@ -35,6 +43,7 @@ async function makeCoreContext(): Promise<Context> {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   return ctx
 }
@@ -214,7 +223,7 @@ describe('config-driven session id', () => {
       cleanupStarted.resolve(undefined)
       await cleanupGate.promise
     })
-    first.inject(createUserMessage({ content: [{ type: 'text', text: 'persist before cancellation' }], source: { kind: 'plugin', plugin: 'test' } }))
+    first.inject(createUserMessage({ content: [{ type: 'text', text: 'persist before cancellation' }], source: { kind: 'test' } }))
     await ctx.sessions.flush(first.session)
     expect(JSON.stringify(await readStoredEvents(ctx, sessionId)))
       .toContain('persist before cancellation')
@@ -366,6 +375,7 @@ describe('config-driven session id', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(AgentRegistry)
     const loopFiber = await ctx.plugin(AgentLoop, {
       agents: [{ id: SessionId('main'), provider: 'mock', model: 'mock', resumeSessionId: SessionId('deferred') }],
@@ -373,10 +383,7 @@ describe('config-driven session id', () => {
 
     const resumeEffect = loopFiber.getEffects().find(effect => effect.label === 'agentLoop.resume(main)')
     expect(resumeEffect?.children.map(child => child.label)).toEqual(['ctx.plugin()'])
-    // Exactly one plugin effect sits at the fiber's own level — the optional
-    // settings wiring, whose `ctx.inject` cordis labels like any other plugin.
-    // A resumed agent joining it there is the regression this pins.
-    expect(loopFiber.getEffects().filter(effect => effect.label === 'ctx.plugin()')).toHaveLength(1)
+    expect(loopFiber.getEffects().filter(effect => effect.label === 'ctx.plugin()')).toHaveLength(0)
 
     await loopFiber.dispose()
   })
@@ -392,6 +399,7 @@ describe('config-driven session id', () => {
     await ctx1.plugin(SessionProjectionRegistry)
     await ctx1.plugin(SystemPrompt)
     await ctx1.plugin(ToolRuntime)
+    await ctx1.plugin(NativeToolExecutor)
     await ctx1.plugin(AgentRegistry)
     await ctx1.plugin(JsonlSessionPersistence, { root })
     await ctx1.plugin(AgentLoop, { agents: [{ id: SessionId('cfg'), provider: 'mock', model: 'mock' }] })
@@ -415,6 +423,7 @@ describe('config-driven session id', () => {
     await ctx2.plugin(SessionProjectionRegistry)
     await ctx2.plugin(SystemPrompt)
     await ctx2.plugin(ToolRuntime)
+    await ctx2.plugin(NativeToolExecutor)
     await ctx2.plugin(AgentRegistry)
     await ctx2.plugin(JsonlSessionPersistence, { root })
     await ctx2.plugin(AgentLoop, { agents: [{ id: SessionId('cfg'), provider: 'mock', model: 'mock' }] })
@@ -441,6 +450,7 @@ describe('config-driven session id', () => {
     await ctx1.plugin(SessionProjectionRegistry)
     await ctx1.plugin(SystemPrompt)
     await ctx1.plugin(ToolRuntime)
+    await ctx1.plugin(NativeToolExecutor)
     await ctx1.plugin(AgentRegistry)
     await ctx1.plugin(JsonlSessionPersistence, { root })
     await ctx1.plugin(AgentLoop, { agents: [] })
@@ -459,6 +469,7 @@ describe('config-driven session id', () => {
     await ctx2.plugin(SessionProjectionRegistry)
     await ctx2.plugin(SystemPrompt)
     await ctx2.plugin(ToolRuntime)
+    await ctx2.plugin(NativeToolExecutor)
     await ctx2.plugin(AgentRegistry)
     await ctx2.plugin(AgentLoop, { agents: [{ id: SessionId('main'), provider: 'mock', model: 'mock', resumeSessionId: SessionId('sticky-1') }] })
     await ctx2.plugin(JsonlSessionPersistence, { root })
@@ -476,6 +487,34 @@ describe('config-driven session id', () => {
     await ctx2.fiber.dispose()
   })
 
+  it.each([
+    { label: 'preserves the recorded effort on the same configured route', route: { provider: 'mock', model: 'mock' }, expected: { provider: 'mock', model: 'mock', reasoningEffort: 'high' }, appended: 0 },
+    { label: 'applies an explicit configured effort', route: { provider: 'mock', model: 'mock', reasoningEffort: ReasoningEffortId('low') }, expected: { provider: 'mock', model: 'mock', reasoningEffort: 'low' }, appended: 1 },
+    { label: 'keeps the recorded choice without a configured route', route: {}, expected: { provider: 'mock', model: 'mock', reasoningEffort: 'high' }, appended: 0 },
+  ])('config-driven resume $label', async ({ route, expected, appended }) => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-cfg-resume-route-'))
+    dirs.push(root)
+    const ctx1 = await makeCoreContext()
+    await ctx1.plugin(JsonlSessionPersistence, { root })
+    await ctx1.plugin(AgentLoop, { agents: [] })
+    ctx1.llm.registerAdapter(['mock'], new MockAdapter([textResponse('first')]))
+    const h1 = await ctx1.agents.create({ sessionId: SessionId('sticky-route'), agentOptions: { provider: 'mock', model: 'mock' } })
+    h1.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'remember me' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx1, h1.agent)
+    h1.agent.model.select({ provider: 'mock', model: 'mock', reasoningEffort: ReasoningEffortId('high') })
+    await h1.dispose()
+    await ctx1.fiber.dispose()
+
+    const ctx2 = await makeCoreContext()
+    await ctx2.plugin(JsonlSessionPersistence, { root })
+    await ctx2.plugin(AgentLoop, { agents: [{ id: SessionId('main'), ...route, resumeSessionId: SessionId('sticky-route') }] })
+    await expect.poll(() => ctx2.agents.get(SessionId('sticky-route')), { timeout: 5_000 }).toBeDefined()
+    const resumed = ctx2.agents.get(SessionId('sticky-route'))!
+    expect(resumed.model.current()).toEqual(expected)
+    expect(resumed.session.snapshotEvents().filter(event => event.type === 'model/selection')).toHaveLength(1 + appended)
+    await ctx2.fiber.dispose()
+  })
+
   it('config-driven resume of a missing session is contained: logs a warning, no agent, no crash', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-cfg-resume-miss-'))
     dirs.push(root)
@@ -485,6 +524,7 @@ describe('config-driven session id', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [{ id: SessionId('main'), provider: 'mock', model: 'mock', resumeSessionId: SessionId('does-not-exist') }] })
     const warn = vi.spyOn((ctx.agentLoop as unknown as { ctx: { logger: { warn: (...a: unknown[]) => void } } }).ctx.logger, 'warn')

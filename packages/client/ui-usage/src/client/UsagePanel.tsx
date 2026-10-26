@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
-  IconDataOutline16, IconRefreshOutline16, IconWarningOutline16, useDismissOnOutsidePointer,
+  IconDataOutlineMedium, IconRefreshOutlineMedium, IconWarningOutlineMedium, useDismissOnOutsidePointer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { UsageProviderId, UsageReport, UsageSnapshot } from '@deepseek-ai/dsh-api-remotes/client'
@@ -72,7 +72,7 @@ function ReportRow({ report, t }: ReportRowProps) {
       <div className={css.report} data-provider={report.provider}>
         {title}
         <p className={css.error} role="alert">
-          <IconWarningOutline16 size={12} />
+          <IconWarningOutlineMedium size={12} />
           <span>{report.message}</span>
         </p>
       </div>
@@ -176,7 +176,7 @@ export function UsagePanel({ wide, refresh, t }: UsagePanelProps) {
         data-active={open || undefined}
         onClick={() => { setOpen(value => !value) }}
       >
-        <IconDataOutline16 />
+        <IconDataOutlineMedium />
         {wide ? <span className={css.badgeLabel}>{t('panel.title')}</span> : null}
       </button>
       {open && (
@@ -195,14 +195,14 @@ export function UsagePanel({ wide, refresh, t }: UsagePanelProps) {
               onClick={() => { void load() }}
             >
               <span className={fetching ? css.spinning : css.refreshIcon}>
-                <IconRefreshOutline16 size={14} />
+                <IconRefreshOutlineMedium size={14} />
               </span>
             </button>
           </header>
           <div className={css.body}>
             {error !== undefined && (
               <p className={css.error} role="alert">
-                <IconWarningOutline16 size={12} />
+                <IconWarningOutlineMedium size={12} />
                 <span>{error}</span>
               </p>
             )}

@@ -1,16 +1,22 @@
 /** The Telegram-origin sessions section: platform header + session rows. */
 
-import { IconSendOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSendOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import clsx from 'clsx'
-import { useState } from 'react'
-import { IconTriangleRightFill14 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { SessionNodeItem, type RowTranslate } from './rows/Rows.tsx'
+import { useState, type ComponentProps } from 'react'
+import { IconTriangleRightFillRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { SessionNodeItem } from './rows/Rows.tsx'
 import rowsCss from './rows/Rows.module.css'
 import type { SessionNode } from './tree.ts'
 import css from './rows/WorkspaceBrowser.module.css'
 
 /** Rows visible before the show-more affordance; mirrors workspace groups. */
 const COLLAPSED_SESSION_LIMIT = 5
+
+/** Session-row props the section forwards unchanged from the tree owner. */
+type SessionRowPassthrough = Pick<
+  ComponentProps<typeof SessionNodeItem>,
+  'currentId' | 'now' | 'onOpen' | 'onRenameRequest' | 'renderSlot' | 'useSessionAccess' | 'home' | 't'
+>
 
 /**
  * One collapsible section listing Telegram-started sessions above the local
@@ -19,21 +25,14 @@ const COLLAPSED_SESSION_LIMIT = 5
  * sessions keep out of workspace ordering).
  */
 export function TelegramSection({
-  nodes, expanded, onToggle, currentId, now, onOpen, onFork, onRename, onArchive, label, t,
+  nodes, expanded, onToggle, currentId, now, onOpen, onRenameRequest, renderSlot, useSessionAccess, home, label, t,
 }: {
   nodes: readonly SessionNode[]
   /** Persisted fold state; the section renders nothing while it has no rows. */
   expanded: boolean
   onToggle: () => void
-  currentId: SessionNode['id'] | undefined
-  now: number
-  onOpen: (sessionId: SessionNode['id']) => void
-  onFork: (sessionId: SessionNode['id']) => void
-  onRename: (sessionId: SessionNode['id'], currentTitle: string) => void
-  onArchive: (sessionId: SessionNode['id']) => void
   label: string
-  t: RowTranslate
-}) {
+} & SessionRowPassthrough) {
   const [showAll, setShowAll] = useState(false)
   if (nodes.length === 0) return null
   const visible = expanded || showAll ? nodes : nodes.slice(0, COLLAPSED_SESSION_LIMIT)
@@ -46,10 +45,10 @@ export function TelegramSection({
         onClick={onToggle}
       >
         <span className={clsx(rowsCss.slot, rowsCss.folder)}>
-          <IconSendOutline14 />
+          <IconSendOutlineRegular />
         </span>
         <span className={clsx(rowsCss.slot, rowsCss.chevron)}>
-          <IconTriangleRightFill14 className={clsx(rowsCss.arrow, expanded && rowsCss.arrowOpen)} />
+          <IconTriangleRightFillRegular className={clsx(rowsCss.arrow, expanded && rowsCss.arrowOpen)} />
         </span>
         <span className={rowsCss.projectText}>
           <span className={rowsCss.title}>{label}</span>
@@ -65,9 +64,10 @@ export function TelegramSection({
               currentId={currentId}
               now={now}
               onOpen={onOpen}
-              onFork={onFork}
-              onRename={onRename}
-              onArchive={onArchive}
+              onRenameRequest={onRenameRequest}
+              renderSlot={renderSlot}
+              useSessionAccess={useSessionAccess}
+              home={home}
               t={t}
             />
           ))}

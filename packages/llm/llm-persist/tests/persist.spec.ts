@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import { SettingsProvider } from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import LlmRuntime, { createUserMessage, EMPTY_RESPONSE_CODE, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -14,6 +12,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import * as persist from '../src/index.ts'
 
 type ScriptEntry = Iterable<StreamChunk> | AsyncIterable<StreamChunk>
@@ -79,9 +78,10 @@ async function harness(
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
-  const persistFiber = await ctx.plugin(Object.assign((inner: Context) => {
-    persist.apply(inner, config, internals)
-  }, { inject: persist.inject }))
+  const persistFiber = await ctx.plugin(Object.assign((inner: Context, resolved: persist.Config = {}) => {
+    persist.apply(inner, resolved, internals)
+  }, { inject: persist.inject, Config: persist.Config }), config)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentLoop, { agents: [] })
   const disposeAdapter = ctx.llm.registerAdapter(['mock', 'other'], adapter)
   return { ctx, persistFiber, disposeAdapter }
@@ -368,23 +368,8 @@ describe('provider-pinned retry persistence', () => {
     expect(agent.session.snapshotEvents().filter(event => event.type === 'llm/persist')).toHaveLength(0)
   })
 
-  it('reads the live settings section for recovery decisions', async () => {
+  it('applies an updated config section to recovery decisions after a fiber update', async () => {
     vi.useFakeTimers()
-    class MemorySettings extends SettingsProvider {
-      doc: Record<string, unknown> = {}
-
-      get writable(): boolean {
-        return true
-      }
-
-      protected load(): Promise<Record<string, unknown>> {
-        return Promise.resolve(structuredClone(this.doc))
-      }
-
-      protected async persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-        this.doc[ns] = structuredClone(section)
-      }
-    }
     const adapter = new ScriptedAdapter([
       emptyCompletion({ message: 'busy', code: 'SERVER' }),
       textResponse('recovered'),
@@ -393,8 +378,9 @@ describe('provider-pinned retry persistence', () => {
       providers: ['mock'],
     }, { random: () => 0.5 })
     context = built.ctx
-    await built.ctx.plugin(MemorySettings)
-    await built.ctx.settings.update('llm-persist' as SettingsNamespace, {
+    // The settings document updates the plugin's profile entry; the Loader
+    // restarts the fiber with the resolved replacement config.
+    built.persistFiber.update({
       providers: ['mock'],
       codes: ['SERVER'],
       backoff: { initialDelayMs: 500, maxDelayMs: 10_000, jitterRatio: 0 },

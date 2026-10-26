@@ -20,12 +20,13 @@
  * registering into one already depends on it for the declaration. The types
  * therefore live with their declarer.
  */
+import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type { RightbarOwnerProps } from '@deepseek-ai/dsh-client-ui-layout/client'
 // The locale plugin's own merge carries the shared `common` vocabulary that the
 // lookup chain consults after this namespace misses.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import type { PaneId, TabRecord } from '@deepseek-ai/dsh-client-ui-dockkit'
+import type { PaneId, TabId, TabRecord } from '@deepseek-ai/dsh-client-ui-dockkit'
 import type { SlotHookFactory } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TabHookContext } from '../tab-info.ts'
 import type { SidebarRightKey } from '../locales.ts'
@@ -39,7 +40,15 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
   interface SlotMap {
     /** Session content selected by the root-scoped right Sidebar controller. */
-    'rightbar.session': { kind: 'single'; scope: 'session'; owner: RightbarOwnerProps }
+    'rightbar.session': {
+      kind: 'single'
+      scope: 'session'
+      owner: RightbarOwnerProps & {
+        readonly active: boolean
+        /** @param tabId - retained body. @param signal - tab occurrence lifetime. @returns releases the View-owned hold. */
+        readonly retainTab: (tabId: TabId, signal: AbortSignal) => () => void
+      }
+    }
     /**
      * One tab's body, dispatched with the `id` of the type in force for
      * `tab.kind`. A tab type registers here under its definition's `id` and
@@ -78,6 +87,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       hookContext: UseSidebarRightTabInfo
       inject: { hooks: { tabInfo: SlotHookFactory<'sidebar.right.tab.guide', UseSidebarRightTabInfo> } }
     }
+    /** Rows of the guide's More menu; the guide shows More only while this list has registrations. */
+    'sidebar.right.tab.guide.actions': { kind: 'list'; scope: 'root'; owner: SidebarRightGuideActionsOwnerProps }
     /** One provider's guide card, with the standard card as the owner's fallback. */
     'sidebar.right.tab.guide.entry': {
       kind: 'keyed'
@@ -121,8 +132,20 @@ export interface SidebarRightTabPlacement {
   readonly replaceTab?: boolean
 }
 
+/** Page-owned operations registered for a mounted tab body. */
+export interface SidebarRightTabCommands {
+  /** Refresh this page through its existing resource owner. */
+  readonly refresh?: () => void
+}
+
 /** The actions one tab may take on itself; each acts on the session the tab is in. */
 export interface SidebarRightTabActions {
+  /**
+   * Bind page operations until the body unmounts or the tab lifetime ends.
+   * @param commands - operations supported by this page; omitted operations are unavailable.
+   * @returns disposer that cannot remove a newer body's registration.
+   */
+  bindCommands(commands: SidebarRightTabCommands): () => void
   /**
    * Open a resource from this tab; see `ISidebarRight.openResource`.
    * @param address - a `dsh-resource://` address.
@@ -148,7 +171,12 @@ export interface SidebarRightTabInfo {
   }
   readonly panel: { readonly id: PaneId }
   readonly tab: TabRecord & {
-    /** Docked bodies need an expanded sidebar and an active tab; expanded titles include inactive tabs. Floats stay visible. */
+    /** Effective refresh binding for this page's controls. */
+    readonly refreshShortcut?: ShortcutCatalogEntry | undefined
+    /**
+     * Only the foreground Session is visible. Docked bodies require expansion and selection;
+     * expanded titles include inactive tabs. Floats survive collapse.
+     */
     readonly visible: boolean
     readonly navigation: SidebarRightTabNavigation
     /** Aborted only when the record disappears or this plugin unloads, not on hide or session switch. */
@@ -188,4 +216,33 @@ export interface SidebarRightGuideEntryOwnerProps {
   readonly kind: string
   readonly title: string
   readonly description?: string
+}
+
+/** One customizable guide card listed in the More menu. */
+export interface SidebarRightGuideActionEntry {
+  /** Card id, `kind:entry id`. */
+  readonly id: string
+  /** Resolved card title. */
+  readonly label: string
+  /** False while the card is unpinned from the guide. */
+  readonly pinned: boolean
+}
+
+/** Owner share of the guide's More menu rows. */
+export interface SidebarRightGuideActionsOwnerProps {
+  /** Guide cards in registry order; cards of kind `files` are never listed. */
+  readonly entries: readonly SidebarRightGuideActionEntry[]
+  /**
+   * Open a card's tab type in the guide's place without changing its pin state.
+   * @param id - Listed card id.
+   */
+  readonly onOpen: (id: string) => void
+  /**
+   * Show (true) or unpin (false) a guide card.
+   * @param id - Listed card id.
+   * @param pinned - Whether the card shows on the guide.
+   */
+  readonly onPinnedChange: (id: string, pinned: boolean) => void
+  /** Close the More menu. */
+  readonly onDismiss: () => void
 }

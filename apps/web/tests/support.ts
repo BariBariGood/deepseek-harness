@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Browser, Locator, Page } from 'playwright'
+import { expect, vi, type MockInstance } from 'vitest'
 
 /** The built page under test; `pnpm run test:web` rebuilds it before running. */
 export const DIST_INDEX = fileURLToPath(new URL('../dist/index.html', import.meta.url))
@@ -37,6 +38,71 @@ export function requireBuilt(name: string): unknown {
  */
 export const ZH_BROWSER_LOCALE = 'zh-CN'
 
+/** Same-day anchor for seeded event times and the Asia/Shanghai browser clock. */
+export const WEB_FIXTURE_TIME = Date.parse('2026-01-15T12:00:00+08:00')
+
+/**
+ * Budget for a plugin-manager switch to republish its state after a click: the
+ * click starts a Host profile write, and the store's follow-up `load()` re-reads
+ * its inventory before the switch shows the new value. That chain measured
+ * 0.5-0.8 s on an idle host and 2.0-4.8 s across 32 samples in a 16-worker lane,
+ * so Vitest's 1-second `expect.poll` default expires first.
+ */
+export const PLUGIN_TOGGLE_SETTLE_MS = 10_000
+
+/**
+ * Pin the Host clock to the shared fixture day for one scenario suite.
+ *
+ * A rendered message clock gains a `clock.md` / `clock.ymd` date prefix as soon
+ * as the message's local day differs from the renderer's, so a scenario whose
+ * message times are stamped by the Host wall clock — a live composer send, or a
+ * seed anchored from `Date.now()` — renders a different aria line once the run
+ * spans `Asia/Shanghai` midnight. Reading the fixture day on both clocks makes
+ * that calendar fact part of the scenario rather than of the run.
+ *
+ * The pinned clock advances with real elapsed time, so turn deadlines, session
+ * ordering, and durations keep running.
+ * @returns the installed `Date.now` spy, restored by the caller in teardown.
+ */
+export function pinHostClock(): MockInstance<typeof Date.now> {
+  const startedAt = performance.now()
+  return vi.spyOn(Date, 'now').mockImplementation(() =>
+    WEB_FIXTURE_TIME + Math.floor(performance.now() - startedAt))
+}
+
+/**
+ * Pin a scenario page's calendar to the shared fixture day, advancing with real
+ * time. Pair it with {@link pinHostClock} for a scenario that stamps its own
+ * message times, and with `seedSession`'s `createdAt` for a seeded one.
+ *
+ * Only the page's `Date` reads the fixture day; native timers and
+ * `requestAnimationFrame` keep their real scheduling. Playwright's
+ * `page.clock` is not used: its server records clock state with the Vitest
+ * worker's `Date.now`, which {@link pinHostClock} replaces, so after a
+ * navigation the page clock replays the gap between the real and fixture days
+ * and hands the resulting negative delay to native `setTimeout`. The browser
+ * truncates that delay to a 32-bit integer, and in about half of the dates the
+ * result is a positive delay of weeks that stops every page timer. The `Date`
+ * override is installed for every later document and on the current one, and
+ * stays until the page closes.
+ * @param page - page whose calendar is pinned.
+ */
+export async function pinBrowserClock(page: Page): Promise<void> {
+  // The worker's `new Date()` keeps the real clock even when `Date.now` is pinned.
+  const offset = WEB_FIXTURE_TIME - new Date().getTime()
+  const install = (offset: number): void => {
+    const NativeDate = Date
+    const now = (): number => NativeDate.now() + offset
+    globalThis.Date = new Proxy(NativeDate, {
+      construct: (target, args, newTarget): Date => Reflect.construct(target, args.length === 0 ? [now()] : args, newTarget) as Date,
+      apply: () => new NativeDate(now()).toString(),
+      get: (target, property, receiver): unknown => property === 'now' ? now : Reflect.get(target, property, receiver),
+    })
+  }
+  await page.addInitScript(install, offset)
+  await page.evaluate(install, offset)
+}
+
 /**
  * Open the standard browser-test page advertising English before client boot.
  * This keeps role locators and goldens deterministic while leaving the Host
@@ -53,32 +119,51 @@ export async function newEnglishPage(browser: Browser, height = 1000): Promise<P
 }
 
 /**
- * Expand every currently eligible Turn-process group so a Tool-focused
+ * Scroll a locator whose rendered element can be replaced during layout.
+ * @param target - locator resolved again when its previous element detached.
+ */
+export async function scrollIntoView(target: Locator): Promise<void> {
+  await expect.poll(() => target.evaluate((element) => {
+    if (!element.isConnected) return false
+    element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' })
+    return true
+  }), { timeout: 10_000 }).toBe(true)
+}
+
+/**
+ * Expand every eligible Turn process and secondary group so a Tool-focused
  * scenario can exercise the original row contract beneath product-default
  * compact Chat presentation.
  * @param page - page containing the Chat view.
  */
 export async function expandTurnProcesses(page: Page): Promise<void> {
-  const controls = page.locator('[data-turn-process]')
+  const controls = page.locator('[data-turn-process], [data-process-activity]')
   await controls.first().waitFor({ state: 'visible', timeout: 10_000 })
   const count = await controls.count()
   for (let index = 0; index < count; index++) {
     const control = controls.nth(index)
-    if (await control.getAttribute('aria-expanded') !== 'true') await control.click()
+    if (await control.isVisible() && await control.getAttribute('aria-expanded') === 'false') await control.click()
   }
 }
 
 /**
- * Expand the Turn-process group containing one possibly hidden descendant.
+ * Expand the settled Turn process and secondary group containing a hidden descendant.
  * @param page - page containing the Chat view.
- * @param target - descendant whose owning Turn process should open.
+ * @param target - descendant whose outer process disclosures should open.
  */
 export async function expandOwningTurnProcess(page: Page, target: Locator): Promise<void> {
+  if (await target.isVisible()) return
   const turn = await target.evaluate(element => element.closest<HTMLElement>('[data-chat-turn]')?.dataset.chatTurn)
-  if (turn === undefined || await target.isVisible()) return
-  const control = page.locator(`[data-turn-process="${turn}"]`)
-  await control.waitFor({ state: 'visible', timeout: 10_000 })
-  if (await control.getAttribute('aria-expanded') !== 'true') await control.click()
+  if (turn !== undefined) {
+    const control = page.locator(`[data-turn-process="${turn}"]`)
+    if (await control.count() > 0) {
+      await control.waitFor({ state: 'visible', timeout: 10_000 })
+      if (await control.getAttribute('aria-expanded') === 'false') await control.click()
+    }
+  }
+  const group = target.locator('xpath=ancestor::*[@data-chat-group-key][1]')
+  const header = group.locator('[data-process-activity]').first()
+  if (await header.isVisible() && await header.getAttribute('aria-expanded') === 'false') await header.click()
 }
 
 /** Fail loud on a stale checkout instead of testing yesterday's bundle. */
@@ -123,7 +208,7 @@ export function probeFreePort(): Promise<number> {
  */
 export async function connectFreshWorkspace(page: Page, root: string, name = 'workspace'): Promise<void> {
   mkdirSync(join(root, name), { recursive: true })
-  await page.getByRole('textbox', { name: 'Choose workspace' }).click()
+  await page.getByRole('button', { name: 'Add workspace', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Select Workspace Directory' })
   await dialog.waitFor({ timeout: 10_000 })
   await dialog.getByRole('button', { name: 'Edit path' }).click()
@@ -145,10 +230,11 @@ export async function connectFreshWorkspace(page: Page, root: string, name = 'wo
  * @param page - the browser page under test.
  * @param root - workspace parent directory.
  * @param name - directory created under `root` and connected.
+ * @param modelAvailable - require an editable composer when the selected model is available.
  */
-export async function connectFreshWorkspaceZh(page: Page, root: string, name = 'workspace'): Promise<void> {
+export async function connectFreshWorkspaceZh(page: Page, root: string, name = 'workspace', modelAvailable = true): Promise<void> {
   mkdirSync(join(root, name), { recursive: true })
-  await page.getByRole('textbox', { name: '选择工作区' }).click()
+  await page.getByRole('button', { name: '添加工作区', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '选择工作区目录' })
   await dialog.waitFor({ timeout: 10_000 })
   await dialog.getByRole('button', { name: '编辑路径' }).click()
@@ -156,7 +242,8 @@ export async function connectFreshWorkspaceZh(page: Page, root: string, name = '
   await pathInput.fill(join(root, name))
   await pathInput.press('Enter')
   await dialog.getByRole('button', { name: '打开', exact: true }).click()
-  await page.locator('[data-composer-input][contenteditable="true"][data-placeholder="描述你想要构建的内容, / 调用指令, @ 文件或对话"]')
+  const editable = modelAvailable ? '[contenteditable="true"]' : ''
+  await page.locator(`[data-composer-input]${editable}[data-placeholder="描述你想要构建的内容, / 调用指令, @ 文件或对话"]`)
     .waitFor({ timeout: 15_000 })
 }
 
@@ -205,6 +292,30 @@ export async function saveFailureShot(page: Page, name: string): Promise<void> {
 }
 
 /**
+ * Assert a visible tooltip paints above the element a user would read through
+ * it, at the bubble's center and bottom edge. The bubble ignores pointer events
+ * by design, so the measurement enables them for its own duration; each probe
+ * reports the bubble or the covering element, so a failure names its cover.
+ * @param tooltip - locator for the visible `[role="tooltip"]` bubble.
+ */
+export async function expectTooltipOnTop(tooltip: Locator): Promise<void> {
+  const probes = await tooltip.evaluate((bubble) => {
+    const rect = bubble.getBoundingClientRect()
+    const previous = bubble.style.pointerEvents
+    bubble.style.pointerEvents = 'auto'
+    const probe = (y: number): string => {
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, y)
+      if (hit === null) return 'none'
+      return bubble.contains(hit) ? 'tooltip' : `${hit.tagName}.${hit.classList.value}`.slice(0, 120)
+    }
+    const probes = { center: probe(rect.top + rect.height / 2), bottom: probe(rect.bottom - 1) }
+    bubble.style.pointerEvents = previous
+    return probes
+  })
+  expect(probes).toEqual({ center: 'tooltip', bottom: 'tooltip' })
+}
+
+/**
  * The conversation engine's Context key format, restated here rather than
  * imported: these specs live in the Host compiler aggregate, which must not
  * reach the Client plane. The engine's own copy is
@@ -216,4 +327,14 @@ export async function saveFailureShot(page: Page, name: string): Promise<void> {
  */
 export function conversationContextKey(kind: string, id: string): string {
   return `${kind.length}:${kind}${id}`
+}
+
+/** Open Settings through the sidebar account menu.
+ * @param page - browser page with the mounted sidebar.
+ * @param locale - current UI language.
+ */
+export async function openSettings(page: Page, locale: 'en' | 'zh' | 'ja'): Promise<void> {
+  const labels = { en: ['Account menu', 'Settings'], zh: ['账号菜单', '设置'], ja: ['アカウントメニュー', '設定'] } as const
+  await page.getByRole('button', { name: labels[locale][0], exact: true }).click()
+  await page.getByRole('menuitem', { name: labels[locale][1], exact: true }).click()
 }

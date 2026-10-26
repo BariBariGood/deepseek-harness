@@ -5,18 +5,29 @@
  * replacement or header change explains the difference.
  */
 
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, LlmError, ReasoningEffortId  } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, foldRequestHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { MockAdapter, textResponse, toolCallResponse } from './mock-adapter.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'outer-wrapper': { kind: 'outer-wrapper' } & ContextFormed
+    'test': { kind: 'test' } & ContextFormed
+    'test-compact': { kind: 'test-compact' } & ContextFormed
+  }
+}
 
 async function harness(adapter: MockAdapter, persona = 'stable base') {
   return harnessRoutes([['mock', adapter]], persona)
@@ -32,6 +43,7 @@ async function harnessRoutes(
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, { personaPrefix: persona })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   for (const [provider, adapter] of adapters) ctx.llm.registerAdapter([provider], adapter)
@@ -177,7 +189,7 @@ describe('request stability across the loop', () => {
       if (decision.kind === 'reject') return decision
       const appended = createUserMessage({
         content: [{ type: 'text', text: 'appended reference context' }],
-        source: { kind: 'plugin', plugin: 'outer-wrapper' },
+        source: { kind: 'outer-wrapper' },
       })
       return { ...decision, messages: [...decision.messages, appended] }
     }, { prepend: true })
@@ -209,13 +221,11 @@ describe('request stability across the loop', () => {
     const adapter = new MockAdapter([textResponse('one'), textResponse('two')], reasoning)
     const ctx = await harness(adapter)
     const agent = await ctx.agentLoop.create(SessionId('effort'), { provider: 'mock', model: 'mock' })
-    ctx.on('agent/request', async ({ turn }, next) => {
-      const config = await next()
-      return turn === 2 ? { ...config, reasoningEffort: ReasoningEffortId('max') } : config
-    })
-
     send(agent, 'first')
     await waitForIdle(ctx, agent)
+    agent.model.select({
+      provider: 'mock', model: 'mock', reasoningEffort: ReasoningEffortId('max'),
+    })
     send(agent, 'second')
     await waitForIdle(ctx, agent)
 
@@ -244,6 +254,9 @@ describe('request stability across the loop', () => {
         sessionId: SessionId(`effort-${model}`),
         seed: structuredClone(agent.session.snapshotEvents()),
         agentOptions: { provider: 'mock', model },
+        setup: (_ctx, agent) => {
+          if (model !== 'mock') agent.model.select({ provider: 'mock', model })
+        },
       })
       send(resumedHandle.agent, 'resumed')
       await waitForIdle(resumedCtx, resumedHandle.agent)
@@ -285,15 +298,9 @@ describe('request stability across the loop', () => {
       provider: 'deepseek',
       model: 'deepseek-model',
     })
-    ctx.on('agent/request', async ({ turn }, next) => {
-      const config = await next()
-      return turn === 2
-        ? { ...config, provider: 'other', model: 'other-model' }
-        : config
-    })
-
     send(agent, 'first')
     await waitForIdle(ctx, agent)
+    agent.model.select({ provider: 'other', model: 'other-model' })
     send(agent, 'second')
     await waitForIdle(ctx, agent)
 
@@ -319,15 +326,9 @@ describe('request stability across the loop', () => {
       model: 'deepseek-model',
       maxTokens: 4_096,
     })
-    ctx.on('agent/request', async ({ turn }, next) => {
-      const config = await next()
-      return turn === 2
-        ? { ...config, provider: 'other', model: 'other-model' }
-        : config
-    })
-
     send(agent, 'first')
     await waitForIdle(ctx, agent)
+    agent.model.select({ provider: 'other', model: 'other-model' })
     send(agent, 'second')
     await waitForIdle(ctx, agent)
 
@@ -345,6 +346,7 @@ describe('request stability across the loop', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt, { personaPrefix: 'stable base' })
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     const started = Promise.withResolvers<undefined>()
@@ -464,6 +466,7 @@ describe('request stability across the loop', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt, { personaPrefix: 'stable base' })
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     let observed: GenerateOptions | undefined
@@ -508,7 +511,7 @@ describe('request stability across the loop', () => {
     const nodes = agent.session.surface.nodes
     agent.session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[summary of turn 1]' }],
-      source: { kind: 'plugin', plugin: 'test-compact' },
+      source: { kind: 'test-compact' },
     }), {
       surfaceOp: { op: 'replace', startSeq: nodes[1]!, endSeq: nodes[2]! },
       sourceEventSeqs: [nodes[1]!, nodes[2]!],
@@ -544,7 +547,7 @@ describe('request stability across the loop', () => {
       if (first === undefined) throw new Error('request has no surface message to compact')
       subject.session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: '[summary for retry]' }],
-        source: { kind: 'plugin', plugin: 'test-compact' },
+        source: { kind: 'test-compact' },
       }), {
         surfaceOp: { op: 'replace', startSeq: first, endSeq: first },
         sourceEventSeqs: [first],
@@ -694,7 +697,7 @@ describe('request stability across the loop', () => {
     const nodes = agent.session.surface.nodes
     agent.session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[summary of turn 1]' }],
-      source: { kind: 'plugin', plugin: 'test-compact' },
+      source: { kind: 'test-compact' },
     }), {
       surfaceOp: { op: 'replace', startSeq: nodes[1]!, endSeq: nodes[2]! },
       sourceEventSeqs: [nodes[1]!, nodes[2]!],
@@ -742,7 +745,7 @@ describe('request stability across the loop', () => {
     ctx.on('agent/request', async (_payload, next) => {
       if (!injected) {
         injected = true
-        agent.inject(createUserMessage({ content: [{ type: 'text', text: '[late context]' }], source: { kind: 'plugin', plugin: 'test' } }))
+        agent.inject(createUserMessage({ content: [{ type: 'text', text: '[late context]' }], source: { kind: 'test' } }))
       }
       return next()
     })
@@ -752,7 +755,7 @@ describe('request stability across the loop', () => {
     const first = adapter.requests[0]!
     // The inject landed in the log after the boundary: not in THIS request…
     expect(first.messages.some(m => m.content.some(b => b.type === 'text' && b.text.includes('[late context]')))).toBe(false)
-    expect(agent.session.snapshotEvents().some(e => e.type === 'user/message' && e.data.source.kind === 'plugin')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'user/message' && e.data.source.kind !== 'user')).toBe(true)
 
     send(agent, 'second')
     await waitForIdle(ctx, agent)
@@ -771,7 +774,7 @@ describe('request stability across the loop', () => {
       // request content in place. The freeze turns it into a loud error.
       options.messages.push(createUserMessage({
         content: [{ type: 'text', text: 'sneaky' }],
-        source: { kind: 'plugin', plugin: 'test' },
+        source: { kind: 'test' },
       }))
       return next()
     })
@@ -939,9 +942,7 @@ describe('request/context capacity records', () => {
 
     send(agent, 'first')
     await waitForIdle(ctx, agent)
-    ctx.on('agent/request', ({ agent: subject }, next) => subject === agent
-      ? Promise.resolve({ provider: 'mock', model: 'large' })
-      : next())
+    agent.model.select({ provider: 'mock', model: 'large' })
     send(agent, 'second')
     await waitForIdle(ctx, agent)
 
@@ -966,14 +967,9 @@ describe('request/context capacity records', () => {
     const adapter = capacityAdapter({ known: 64_000 }, [textResponse('a'), textResponse('b')])
     const ctx = await harness(adapter)
     const agent = await ctx.agentLoop.create(SessionId('capacity-clear'), { provider: 'mock', model: 'known' })
-    let model = 'known'
-    ctx.on('agent/request', ({ agent: subject }, next) => subject === agent
-      ? Promise.resolve({ provider: 'mock', model })
-      : next())
-
     send(agent, 'first')
     await waitForIdle(ctx, agent)
-    model = 'unknown'
+    agent.model.select({ provider: 'mock', model: 'unknown' })
     send(agent, 'second')
     await waitForIdle(ctx, agent)
 

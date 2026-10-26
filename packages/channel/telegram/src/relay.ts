@@ -21,8 +21,8 @@ export interface RelayAgent {
     /** Frozen snapshot of the log; polled during the turn and folded after it. */
     snapshotEvents(): readonly SessionEvent[]
   }
-  /** Live model-selection ref installed at setup; absent on legacy agents. */
-  readonly selectionRef?: { current: { provider: string; model: string } | undefined } | undefined
+  /** Live model service for mid-session /model switches; absent on legacy agents. */
+  readonly model?: { select(selection: { provider: string; model: string }): void } | undefined
   followup(input: ReturnType<typeof createUserMessage>): void
   whenIdle(): Promise<void>
   cancel(reason: { kind: 'user' }): void
@@ -256,7 +256,7 @@ export class TelegramRelay {
         const state = this.chatStateOf(query.chatId, query.threadId)
         state.selection = resolved
         const live = state.agent
-        if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
+        if (live !== undefined && live.model !== undefined) live.model.select(resolved)
         // Collapse the menu into a receipt; the keyboard disappears.
         await this.io.editMessage(query.chatId, query.messageId, `Model set to ${resolved.provider}/${resolved.model}.`, [])
         await this.io.answerCallback(query.callbackId).catch(() => {})
@@ -396,7 +396,7 @@ export class TelegramRelay {
       const state = this.chatState(message)
       state.selection = resolved
       const live = state.agent
-      if (live !== undefined && live.selectionRef !== undefined) live.selectionRef.current = { ...resolved }
+      if (live !== undefined && live.model !== undefined) live.model.select(resolved)
       await this.io.send(message.chatId, `Model set to ${resolved.provider}/${resolved.model}.`)
     } catch (error) {
       await this.io.send(message.chatId, `Model switch failed: ${error instanceof Error ? error.message : String(error)}`)

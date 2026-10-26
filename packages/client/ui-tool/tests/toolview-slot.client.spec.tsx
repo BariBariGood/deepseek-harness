@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent } from '@testing-library/react'
 import type { ISession } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -9,14 +10,17 @@ import {
   apply as applyChat, inject as injectChat, type ToolResultNode,
 } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
-import { SlotTestRuntime, stubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
+import { SlotTestRuntime, stubConfigForm } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { apply as applyConversation, inject as injectConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { apply as applyTool, inject as injectTool } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import { toolSessionEvents } from './tool-fixtures.client.ts'
 
 const SID = 's1' as SessionId
+// jsdom omits font loading events used by the resident composer.
+const fonts = Object.getOwnPropertyDescriptor(document, 'fonts')
 
 /** jsdom has no ResizeObserver; the composer seat publishes its height through one. */
 class ResizeObserverStub {
@@ -28,11 +32,14 @@ class ResizeObserverStub {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  if (fonts === undefined) Reflect.deleteProperty(document, 'fonts')
+  else Object.defineProperty(document, 'fonts', fonts)
 })
 // The chat store persists under its declared key; clear between cases.
 beforeEach(() => {
   localStorage.clear()
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+  Object.defineProperty(document, 'fonts', { configurable: true, value: new EventTarget() })
 })
 
 const toolResult = (
@@ -41,12 +48,16 @@ const toolResult = (
   name: string,
   args = '{"command":"make build","description":"Build"}',
   over: Partial<ToolResultNode> = {},
-): ToolResultNode => ({
-  kind: 'tool-result', seq, time: seq * 1_000, callId,
-  call: { name, argsRaw: args },
-  callTime: seq * 1_000 - 500,
-  content: [], isError: false, subCalls: [], ...over,
-})
+): ToolResultNode => {
+  const call = over.call === undefined ? { name, argsRaw: args } : over.call
+  return {
+    kind: 'tool-result', seq, time: seq * 1_000, callId,
+    name: call?.name ?? '', args: call === null ? PartialArguments.EMPTY : PartialArguments.fromText(call.argsRaw),
+    call,
+    callTime: seq * 1_000 - 500,
+    content: [], isError: false, subCalls: [], ...over,
+  }
+}
 
 /** Test-owned AppFrame role: declares and renders the resident conversation area. */
 type AppRootProps = PropsRenderSlots<'main'>
@@ -65,10 +76,12 @@ const LAYOUT_CHILDREN = {
  */
 async function bench(nodes: ToolResultNode[]) {
   const runtime = await SlotTestRuntime.create()
+  runtime.ctx.provide('fileDrag', { actions: { prepare: async () => ({ start: () => true, release: () => {} }), reportFailure: () => {} }, read: () => undefined } satisfies import('@deepseek-ai/cordis').Context['fileDrag'])
   const openWorkspacePath = vi.fn(async () => ({ ok: true, value: { opened: true } }))
   runtime.remote.provideNamespaces({ session: { openWorkspacePath } })
-  runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+  runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
   const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
+  runtime.ctx.provide('connection', { state: createSnapshotStore('connected') } as never)
   runtime.ctx.provide('layout', layout)
   const sidebarRight = { openResource: vi.fn<(address: string) => void>() }
   runtime.ctx.provide('sidebarRight', sidebarRight as never)
@@ -197,7 +210,7 @@ describe('keyed toolview hole through the real machinery', () => {
     // names its act and carries the package id rather than falling back to the
     // generic "Tool call · <name> · <id>" row.
     const rowText = (name: string) => view.container.querySelector(`[data-tool="${name}"]`)?.textContent
-    expect(rowText('cordis_runtime_inspect')).toContain('Inspect')
+    expect(rowText('cordis_runtime_inspect')).toContain('Query Cordis environment')
     expect(rowText('cordis_run')).toContain('Run Cordis Plugindyn-2')
     expect(rowText('cordis_stop')).toContain('Stop Cordis Plugindyn-2')
     expect(rowText('cordis_undefine')).toContain('Remove Cordis Plugindyn-2')
@@ -283,12 +296,14 @@ describe('keyed toolview hole through the real machinery', () => {
 describe('registrant declaration injection', () => {
   it('runs a registrant before ui-tool and waits on the actual toolview declaration', async () => {
     const runtime = await SlotTestRuntime.create()
+    runtime.ctx.provide('fileDrag', { actions: { prepare: async () => ({ start: () => true, release: () => {} }), reportFailure: () => {} }, read: () => undefined } satisfies import('@deepseek-ai/cordis').Context['fileDrag'])
     runtime.remote.provideNamespaces({
       session: {
         openWorkspacePath: vi.fn(async () => ({ ok: true, value: { opened: true } })),
       },
     })
-    runtime.ctx.provide('settingsScope', { bind: () => stubSettingsScope().scope } as never)
+    runtime.ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
+    runtime.ctx.provide('connection', { state: createSnapshotStore('connected') } as never)
     runtime.ctx.provide('layout', { openDetails: vi.fn(), closeDetails: vi.fn() })
     runtime.ctx.provide('sidebarRight', { openResource: vi.fn() } as never)
     runtime.ctx.provide('uiWorkspace', {

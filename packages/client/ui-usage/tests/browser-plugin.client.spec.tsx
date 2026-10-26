@@ -4,19 +4,17 @@
  * the plugin contributes the usage entry into sidebar.footer.action through
  * slots.inject, the inject face unwraps the Remote envelope (value out,
  * failure rejected), and registration rides the plugin fiber (HMR safety).
- * The node half and the invariant companion run over the same Context.
+ * The node half runs over the same Context.
  */
 import { Context, Service } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup } from '@testing-library/react'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import type { UsageSnapshot } from '@deepseek-ai/dsh-api-remotes/client'
 import type { UsageFace } from '../src/client/slots.ts'
 import { apply, inject } from '../src/client/index.ts'
 import { apply as nodeApply } from '../src/index.ts'
-import * as UsageInvariant from '../src/invariant.ts'
 
 afterEach(cleanup)
 
@@ -87,10 +85,9 @@ describe('ui-usage browser half on a real Context', () => {
     expect(ctx.slots.entries('sidebar.footer.action')).toHaveLength(0)
   })
 
-  it('runs the empty node half and registers the invariant companion', async () => {
-    nodeApply()
-    const ctx = new Context()
-    await ctx.plugin(InvariantRegistry, { enabled: true })
-    await expect(ctx.plugin(UsageInvariant).await()).resolves.toBeDefined()
+  it('runs the empty node half without a Context', () => {
+    expect(() => {
+      nodeApply()
+    }).not.toThrow()
   })
 })

@@ -13,10 +13,11 @@ import { bootClient } from './boot-client.ts'
 import { BootPage } from './boot-page.ts'
 import { mountClient } from './mount.ts'
 import { getStaticModules } from './seed.ts'
+import { installWindowDragRecall } from './window-drag/recall.ts'
 import './base.css'
 
 /** Module transport hook replaced by jsdom tests. */
-export type BootSeams = Pick<ClientModuleCreateOptions, 'loadBundle'>
+export type BootSeams = Pick<ClientModuleCreateOptions, 'loadBundle' | 'resolveAsset'>
 
 /** Browser boot entry consumed by `apps/web`. */
 export class AppWebEntry {
@@ -24,6 +25,7 @@ export class AppWebEntry {
   private readonly seams: BootSeams | undefined
   private readonly page: BootPage
   private ctx: Context | undefined
+  private stopDragRecall: (() => void) | undefined
   private modules!: ClientModuleSystem
   private manifest!: BootManifest
 
@@ -58,18 +60,19 @@ export class AppWebEntry {
       if (moduleLoader === undefined) {
         throw new Error('web boot: window.__ModuleLoader__ bootstrap facade is missing')
       }
-      // A pre-injected transport (the worker preview page) owns bundle bytes;
-      // its loadBundle is the default and explicit seams still win. The global
+      // A pre-injected transport (the worker preview page) owns bundle and asset
+      // bytes; its loadBundle and resolveAsset are the defaults and explicit seams still win. The global
       // is `ClientTransportHooks`, owned by @deepseek-ai/dsh-client-connection;
-      // this structural slice reads one optional member without adding a
+      // this structural slice reads two optional members without adding a
       // package edge.
       const transport = (globalThis as {
-        __DSH_TRANSPORT__?: { loadBundle?: ClientModuleCreateOptions['loadBundle'] }
+        __DSH_TRANSPORT__?: Pick<ClientModuleCreateOptions, 'loadBundle' | 'resolveAsset'>
       }).__DSH_TRANSPORT__
       this.modules = moduleLoader.create({
         boot: win.__DSH_BOOT__,
         staticModules: getStaticModules(),
         ...transport?.loadBundle === undefined ? {} : { loadBundle: transport.loadBundle },
+        ...transport?.resolveAsset === undefined ? {} : { resolveAsset: transport.resolveAsset },
         ...this.seams,
       })
       this.manifest = this.modules.manifest
@@ -87,6 +90,11 @@ export class AppWebEntry {
           if (onFailure === undefined || state !== 'failed') this.page.setState(name, state)
         },
       })
+      // The shell owns the one watcher that keeps Electron's window drag rects in
+      // step with the rows that own them (electron#32341), so no chrome row has to
+      // know that trap. It installs before the first mount, so the surface the
+      // renderer draws is the one the first frame measures.
+      this.stopDragRecall = installWindowDragRecall({ document: this.container.ownerDocument })
       await mountClient(ctx, this.container)
     } catch (reason) {
       console.error(reason)
@@ -97,6 +105,8 @@ export class AppWebEntry {
 
   /** Dispose the client plugin tree and whichever page owns the mount point. */
   async dispose(): Promise<void> {
+    this.stopDragRecall?.()
+    this.stopDragRecall = undefined
     const ctx = this.ctx
     this.ctx = undefined
     if (ctx !== undefined) await ctx.fiber.dispose()

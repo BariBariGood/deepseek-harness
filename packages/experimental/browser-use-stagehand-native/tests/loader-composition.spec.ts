@@ -1,5 +1,6 @@
 /** A real Loader and AgentLoop exercise independently configured browser inference and durable screenshots. */
 
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -78,8 +79,10 @@ it('loads browser tools from cordis.yml, logs browser results, and admits the sc
     ['@deepseek-ai/dsh-llm', LlmRuntime],
     ['@deepseek-ai/dsh-session', SessionStore],
     ['@deepseek-ai/dsh-session-projection', SessionProjectionRegistry],
+
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-tools', ToolRuntime],
+    ['@deepseek-ai/dsh-tool-executor-native', NativeToolExecutor],
     ['@deepseek-ai/dsh-agent', AgentRegistry],
     ['@deepseek-ai/dsh-agent-loop', AgentLoop],
     ['@deepseek-ai/dsh-attachment-local', LocalAttachmentStore],
@@ -119,9 +122,7 @@ it('loads browser tools from cordis.yml, logs browser results, and admits the sc
   expect(JSON.stringify(extraction)).toContain('Fixture heading')
   const result = events.find(event => event.type === 'tool/result' && event.data.message.source.callId === 'screenshot')
   if (result?.type !== 'tool/result') throw new Error('Missing screenshot result')
-  const tool = result.data.message.content[0]
-  if (tool?.type !== 'tool-result') throw new Error('Missing tool result content')
-  const image = tool.content.find(block => block.type === 'image')
+  const image = result.data.message.content.find(block => block.type === 'image')
   if (image?.type !== 'image') throw new Error('Missing durable screenshot')
   const stored = await context.attachments.readImage(image.attachment)
   expect(Buffer.from(stored.data).toString('base64')).toBe(screenshotBase64)

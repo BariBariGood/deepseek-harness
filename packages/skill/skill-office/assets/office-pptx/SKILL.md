@@ -1,6 +1,6 @@
 ---
 name: office-pptx
-description: Create, read, edit, and check PowerPoint presentations (.pptx), including slide text, tables, images, and charts. Use when a PPTX file is an input or requested deliverable.
+description: Create, read, edit, and validate PowerPoint presentations (.pptx).
 ---
 
 # PowerPoint presentations
@@ -8,6 +8,8 @@ description: Create, read, edit, and check PowerPoint presentations (.pptx), inc
 Follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` and use its Python executable and bundled presentation libraries. Do not install npm or pip packages or locate a system interpreter for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
 
 Keep scripts and output files in the task workspace. The runtime and skill directory contain shared read-only resources. Match the requested slide language and the supplied presentation's design when editing it.
+
+Name Python scripts for their task, such as `edit_pptx.py`; avoid module names such as `inspect.py`, `pptx.py`, or `zipfile.py` that shadow imported libraries.
 
 ## Create and edit
 
@@ -51,20 +53,12 @@ for shape in presentation.slides[0].shapes:
 presentation.save("report-edited.pptx")
 ```
 
-Check that text and images fit the slide dimensions, titles form a useful sequence, and chart labels agree with source values. A native chart's embedded workbook is part of the deliverable and must contain the intended data. Library support for writing PPTX is not a rendering engine or a guarantee that every PowerPoint feature survives editing.
+Check that text and images fit the slide dimensions, titles form a useful sequence, and chart labels agree with source values. Paragraph alignment does not move a text box: when a title must be centered on the slide, center both its paragraph and the text box against `presentation.slide_width`, then reopen to verify both. A native chart's embedded workbook is part of the deliverable and must contain the intended data. Library support for writing PPTX is not a rendering engine or a guarantee that every PowerPoint feature survives editing.
 
 ## Check and deliver
 
-Run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base:
+Reopen the saved presentation with python-pptx to verify the requested slide count, content, formatting, chart data, and notes, including unchanged content that must be preserved. These checks do not establish text fit, readable contrast, or rendering fidelity.
 
-```text
-<python> <skill-directory>/../scripts/check_office.py <presentation.pptx> --out <checks.json>
-```
-
-It checks ZIP/XML integrity and internal relationships and reports slide count and extracted text. Use repeated `--contains TEXT` arguments for required slide text and `--count N` for a requested slide count; `--contains` excludes chart text and speaker notes. Reopen the file to check the requested edits, chart data, and notes. Structural success does not establish text fit, alignment, readable contrast, or rendering fidelity.
-
-If `render_document` is available and visual inspection is useful, call it on the final PPTX, initially omitting `pages` to prepare page 1 and obtain `pageCount`. The tool checks the current main model's actual image capability; do not choose a second model. If `status` is `skipped`, complete structural and content checks and deliver the PPTX, briefly stating that visual layout was not inspected. If ready, call `read_image` on its returned `pages[].imagePath`, then inspect remaining slides in small batches such as `pages: [2, 3, 4]`. Check clipping, alignment, contrast, chart labels, and consistency with the requested design or supplied reference; fix the source and render the affected pages again.
-
-Use the available rendering tool for this check. Inspect `warnings`, especially missing fonts. LibreOffice previews do not certify pixel-identical PowerPoint or Keynote output, animation, or media playback. If the rendering tool is unavailable or fails, retain the usable source and report the inspection limit; do not require the user to install another tool.
+Deliver after the requested edits are verified. Creating a file or changing content with incidental basic formatting does not require additional operations. Load `office-render` for requested images or visual inspection and for appearance-focused styling, spacing, sizing, or alignment changes unless the user explicitly skips rendering. For PDF output load `office-export-pdf`.
 
 Call `present({"files":[{"path":"report-edited.pptx"}]})` with the actual final PPTX path. It exposes the current source file without copying or preserving its bytes, so keep that file in place and leave intermediate images and reports out of delivery unless requested. If `present` is unavailable, use the session's supported file delivery method.

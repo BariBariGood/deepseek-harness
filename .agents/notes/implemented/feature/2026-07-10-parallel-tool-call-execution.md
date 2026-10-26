@@ -26,7 +26,7 @@ A tagged mode, rather than a public boolean scheduler API, keeps resource-aware 
 
 ## Scheduling and ordering
 
-The loop waits for the complete assistant message, parses every call once, creates a distinct `ToolExecution` for each call, and scans them in model order. Consecutive parallel calls form one group; every exclusive call forms a singleton group and an ordering barrier. Groups execute sequentially. Classification is lazy: the scheduler resolves the next call after each barrier and reclassifies every later call before replenishing a parallel pool. If a registry mutation makes that call exclusive, the current pool drains before the call starts as the next barrier.
+The loop waits for the complete assistant message, parses every call once, creates a distinct `ToolExecution` for each call, and scans them in model order. Consecutive parallel calls form one group; every exclusive call forms a singleton group and an ordering barrier. Groups execute sequentially. Classification is lazy: the scheduler resolves the next call after each barrier and reclassifies every later call before replenishing a parallel pool. Calls resolve through the step's admitted tool set, so replacing or removing a call's registration makes that unstarted call fail as `UNKNOWN_TOOL`; the scheduler classifies it as exclusive, and the current pool drains before it settles as the next barrier.
 
 For example:
 
@@ -46,9 +46,9 @@ Only dispatch and the tool body overlap. `tools/pre-execute` and `tools/post-exe
 
 Each started call appends `tool/call` immediately before its pre-execute gate. Completed dispatches occupy model-order slots, and a commit cursor appends `tool/result` and collects `additionalContexts` only when the next slot is ready. Live surfaces may show several pending calls, but results and post-tool context remain model-ordered.
 
-An abort before a group starts records no calls from that group. An abort during a group stops replenishment, waits for already-started calls, commits their results in order, drains accepted batch context after those results, and then ends the step through the existing abort path. Calls that never start have no audit event. An unexpected scheduler failure stops new dispatches, waits for every already-started dispatch to settle, and rethrows the first failure. Because that failure is terminal internal state rather than a tool outcome, the loop does not invent tool results for rejected or uncommitted calls.
+An abort stops replenishment, waits for already-started calls, commits their results in order, drains accepted batch context after those results, and records synthetic aborted call/result pairs for undispatched calls. An unexpected scheduler failure stops new dispatches, waits for every already-started dispatch to settle, and rethrows the first failure. The driver records missing results before closing the failed step under the [failed-step recovery reference](../../../../packages/core/agent-loop/README.md).
 
-PTC mode remains outside this scheduler because the model emits one native `run_code` call. `run_code` and its internal dispatch queue remain serial; native sibling calls in `mode: 'both'` use the normal scheduler.
+The loop schedules native sibling calls and each outer `run_code` call. A `run_code` program has its own bounded dispatch pool, which uses the same parallel/exclusive classification; the [PTC execution reference](../../../../packages/core/tools/README.md#ptc-mode) owns that nested scheduling.
 
 ## Safety contract
 
@@ -66,7 +66,7 @@ Filesystem read relies on a narrow recorder exception: its synchronous observati
 
 ## Verification
 
-Unit coverage pins fail-closed classification, typed argument validation, grouping, barriers, live reclassification after registry replacement, the rolling cap, distinct execution objects, middleware order, ordered results and context, abort draining, and scheduler-failure quiescence. First-party tests pin each parallel declaration.
+Unit coverage pins fail-closed classification, typed argument validation, grouping, barriers, rejection of unstarted calls after registry replacement, the rolling cap, distinct execution objects, middleware order, ordered results and context, abort draining, and scheduler-failure quiescence. First-party tests pin each parallel declaration.
 
 Snapshot coverage pins the visible multi-call transcript: pending calls may overlap while completed results remain model-ordered. PTC mode coverage pins its serial boundary. No provider-backed e2e is required because scheduling is deterministic loop behavior.
 
@@ -84,7 +84,7 @@ Snapshot coverage pins the visible multi-call transcript: pending calls may over
 
 **Expose staged methods or a scheduling waterfall.** Public `prepare` / `dispatch` / `finalize` methods or a `tools/execution-mode` event add extension surface before another consumer needs it. The loop uses an internal scheduler view, while `executionMode(exec)` leaves an insertion point for a policy hook.
 
-**Convert scheduler failures into tool results.** AgentLoop cannot determine whether a rejected dispatch invoked the tool body; ToolRuntime owns body-invocation state and typed tool outcomes. Internal scheduler failures therefore remain terminal instead of being reclassified as `ABORTED` results.
+**Convert scheduler failures into ordinary tool results.** AgentLoop cannot determine whether a rejected dispatch invoked the tool body; ToolRuntime owns body-invocation state and typed tool outcomes. Internal scheduler failures remain terminal instead of being reclassified as `ABORTED` results. Explicit recovery results preserve this uncertainty without leaving unanswered calls.
 
 **Start calls while the model streams.** This may reduce latency further but changes assistant-message authority, replay, and call/result pairing. The scheduler starts only after the assistant message is complete.
 
@@ -96,12 +96,12 @@ Snapshot coverage pins the visible multi-call transcript: pending calls may over
 
 The design is fail-closed and simple for tool authors, but it cannot exploit concurrency whose safety depends on comparing siblings. A tool that opts in too broadly can expose latent shared-state races.
 
-Parallel calls may begin in cases where serial execution would have aborted before reaching them. The scheduler therefore records only started calls, drains them on abort, and never starts replacements after cancellation.
+Parallel calls may begin in cases where serial execution would have aborted before reaching them. The scheduler drains them on abort and never starts replacements after cancellation; undispatched calls receive synthetic aborted call/result pairs.
 
 Ordered commits may hold a fast result behind a slow earlier sibling. This preserves replay and model-history order while live surfaces still show pending progress.
 
 Concurrent external calls can compete for quota or process capacity. Providers own their capacity controls; the loop cap only limits calls from one agent step.
 
-Tool registration is a scheduling boundary. Registry mutations affect not-yet-started calls because the scheduler reclassifies after each barrier and before every pool replenishment. Already-started calls retain the scheduling decision under which they entered the pool.
+Tool registration is a scheduling boundary. Registry mutations affect not-yet-started calls because the scheduler reclassifies after each barrier and before every pool replenishment. A call runs only the registration its step declared ([conditional tools](../../../../packages/core/tools/README.md)), so a hot reload, MCP reconnect, or skill reload that re-registers a tool mid-step fails that step's unstarted calls of it; the next step declares and runs the new registration. Already-started calls retain the scheduling decision under which they entered the pool.
 
-A terminal scheduler failure may leave recorded calls without results before the failed step closes. Waiting for live dispatches preserves quiescence without misreporting those internal failures as tool outcomes.
+A terminal scheduler failure reaches step recovery only after live dispatches settle. Recovery reports uncommitted outcomes as unknown, preserving quiescence and the original failure while keeping later model history usable.

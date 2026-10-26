@@ -1,6 +1,9 @@
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { mountWorkingDirectoryFixture } from '../../subagent/tests/working-directory-fixture.ts'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -97,7 +100,7 @@ describe('dsh-tool-subagent model selection', () => {
       { onStart: () => { starts += 1 } },
     )
     const parent = modelSelectionSetupAgent(ctx)
-    ;(parent as unknown as { options: Agent['options'] }).options = {
+    ;(parent as { options: Agent['options'] }).options = {
       provider: 'deployment-provider',
       model: 'deployment-model',
     }
@@ -113,14 +116,15 @@ describe('dsh-tool-subagent model selection', () => {
     const schema = ctx.tools.schemas(agent).find(entry => entry.name === 'subagent')!
     const props = (schema.parameters as { properties?: Record<string, unknown> }).properties ?? {}
     expect(Object.keys(props).sort()).toEqual([
+      'cwd',
       'description',
       'model',
       'prompt',
       'provider',
       'reasoning_effort',
-      'run_in_background',
     ])
-    expect(schema.description).toContain('list_subagent_models')
+    expect(schema.description).not.toContain('list_subagent_models')
+    expect(schema.description).not.toContain('Changing the route can prevent provider-side reuse')
     expect(ctx.tools.get('list_subagent_models', agent)).toBeDefined()
     expect(schema.description).not.toContain('alpha')
 
@@ -131,13 +135,84 @@ describe('dsh-tool-subagent model selection', () => {
     expect(definition?.description).not.toContain('beta')
   })
 
-  it('hides and rejects route fields when selection is disabled', async () => {
-    const ctx = await setup({ provider: 'mock' })
+  it('rejects route arguments for a backend without Agent options support', async () => {
+    const ctx = await setup({ provider: 'mock' }, { capabilities: { agentOptions: false } })
+    const result = await callSubagent(ctx, {
+      description: 'unsupported route', prompt: 'do it', provider: 'alpha', model: 'parent-model',
+    })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('model selection is disabled for this tool instance')
+  })
+
+  it('hides and rejects route fields without modelSelection', async () => {
+    const ctx = await setup({ provider: 'mock', parentAgentOptions: { provider: 'alpha', model: 'parent-model' } })
     const schema = ctx.tools.schemas().find(entry => entry.name === 'subagent')!
     const props = (schema.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props).sort()).toEqual(['description', 'prompt', 'run_in_background'])
+    expect(Object.keys(props).sort()).toEqual(['cwd', 'description', 'prompt'])
     expect(schema.description).not.toContain('list_subagent_models')
     expect(ctx.tools.get('list_subagent_models')).toBeUndefined()
+
+    for (const selection of [
+      { provider: 'alpha', model: 'parent-model' },
+      { reasoning_effort: 'low' },
+    ]) {
+      const result = await callSubagent(ctx, { description: 'forced route', prompt: 'do it', ...selection })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('child model selection is disabled for this tool instance')
+    }
+  })
+
+  it('shows discovery guidance only while its tool is visible, regardless of mount order', async () => {
+    const ctx = await setup({ provider: 'mock', modelSelection: true })
+    const agent = modelSelectionSetupAgent(ctx)
+    const descriptions = () => ctx.tools.schemas(agent).map(schema => schema.description).join('\n')
+    const guidance = 'Inspect options here before selecting a child provider and model'
+    expect(descriptions()).not.toContain(guidance)
+    expect(descriptions()).not.toContain('list_subagent_models')
+
+    const discovery = await ctx.plugin(tool, { provider: 'mock', toolName: 'discovery_subagent', modelDiscovery: true })
+    expect(descriptions()).toContain(guidance)
+    const restore = agent.ctx.tools.restrict({ deny: ['list_subagent_models'] })
+    expect(descriptions()).not.toContain(guidance)
+    restore()
+    expect(descriptions()).toContain(guidance)
+    await discovery.dispose()
+    expect(descriptions()).not.toContain(guidance)
+  })
+
+  it.each(['configured', 'provider'] as const)('explains effort-only denial on a %s route without Session authorization', async (source) => {
+    const defaults = { provider: 'alpha', model: 'configured-model' }
+    const start = vi.fn()
+    const ctx = await setup({
+      provider: 'mock', modelSelection: true,
+      parentAgentOptions: { provider: 'alpha', model: 'parent-model' },
+      ...source === 'configured' ? { agentOptions: defaults } : {},
+    }, {
+      onStart: start,
+      ...source === 'provider' ? { agentRouteDefaults: defaults } : {},
+    })
+    const result = await callSubagent(ctx, {
+      description: 'adjust effort', prompt: 'work', reasoning_effort: 'low',
+    })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('without a recorded model-selection policy, explicit selection (including reasoning_effort) is limited to the parent route')
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('keeps settings-owned route fields visible but rejects other routes without a Session policy', async () => {
+    const ctx = await setup({
+      provider: 'mock',
+      withModelSelection: true,
+      hostSelectionEnabled: false,
+      parentAgentOptions: { provider: 'alpha', model: 'parent-model' },
+    })
+    const agent = modelSelectionSetupAgent(ctx)
+    const schema = ctx.tools.schemas(agent).find(entry => entry.name === 'subagent')!
+    const props = (schema.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props).sort()).toEqual(['cwd', 'description', 'model', 'prompt', 'provider', 'reasoning_effort'])
+    expect(schema.description).not.toContain('list_subagent_models')
+    expect(schema.description).not.toContain('Changing the route can prevent provider-side reuse')
+    expect(ctx.tools.get('list_subagent_models', agent)).toBeDefined()
 
     const result = await callSubagent(ctx, {
       description: 'forced route',
@@ -146,7 +221,45 @@ describe('dsh-tool-subagent model selection', () => {
       model: 'fast-model',
     })
     expect(result.isError).toBe(true)
-    expect(text(result)).toContain('child model selection is disabled for this tool instance')
+    expect(text(result)).toContain('is not allowed for this Session')
+  })
+
+  it('discovers only the parent route without a Session policy and permits its explicit route and effort', async () => {
+    const requests: SubagentStartRequest[] = []
+    const ctx = await setup({
+      provider: 'mock',
+      withModelSelection: true,
+      hostSelectionEnabled: false,
+      parentAgentOptions: parentWithRoute().options,
+    }, { onStart: (request) => { requests.push(request) } })
+    ctx.llm.registerAdapter(['alpha', 'other-provider'], new MockAdapter([], REASONING))
+    const parent = modelSelectionSetupAgent(ctx)
+    const discover = (args: unknown) => executeToolFixture(ctx, {
+      callId: ToolCallId('default-model-discovery'), name: 'list_subagent_models',
+      arguments: args, agent: parent, signal: new AbortController().signal,
+    })
+    expect(text(await discover({}))).toContain('alpha')
+    expect(text(await discover({}))).not.toContain('other-provider')
+    expect(text(await discover({ provider: 'alpha' }))).toContain('alpha/parent-model')
+    expect(text(await discover({ provider: 'alpha', model: 'parent-model' }))).toContain('low')
+    expect((await discover({ provider: 'alpha', model: 'other-model' })).isError).toBe(true)
+
+    const omitted = await callSubagent(ctx, { description: 'inherit', prompt: 'work' })
+    expect(omitted.isError, text(omitted)).toBe(false)
+    expect(requests[0]?.agentOptions).toBeUndefined()
+    const explicit = await callSubagent(ctx, {
+      description: 'same route', prompt: 'work', provider: 'alpha', model: 'parent-model',
+    })
+    expect(explicit.isError, text(explicit)).toBe(false)
+    expect(requests[1]?.agentOptions).toEqual({ provider: 'alpha', model: 'parent-model' })
+    const effort = await callSubagent(ctx, { description: 'effort', prompt: 'work', reasoning_effort: 'low' })
+    expect(effort.isError, text(effort)).toBe(false)
+    expect(requests[2]?.agentOptions).toEqual({ reasoningEffort: 'low' })
+    const rejected = await callSubagent(ctx, {
+      description: 'other route', prompt: 'work', provider: 'alpha', model: 'other-model',
+    })
+    expect(rejected.isError).toBe(true)
+    expect(requests).toHaveLength(3)
   })
 
   it('rejects enabled model selection when the provider cannot apply Agent options', async () => {
@@ -170,7 +283,7 @@ describe('dsh-tool-subagent model selection', () => {
     }, { onStart: (request) => { requests.push(request) } })
     ctx.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
     const parent = modelSelectionSetupAgent(ctx)
-    ;(parent as unknown as { options: Agent['options'] }).options = parentWithRoute().options
+    ;(parent as { options: Agent['options'] }).options = parentWithRoute().options
 
     const selected = await callSubagent(ctx, {
       description: 'route work',
@@ -210,7 +323,7 @@ describe('dsh-tool-subagent model selection', () => {
     }, { onStart: (request) => { requests.push(request) } })
     ctx.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
     const parent = modelSelectionSetupAgent(ctx)
-    ;(parent as unknown as { options: Agent['options'] }).options = parentWithRoute().options
+    ;(parent as { options: Agent['options'] }).options = parentWithRoute().options
 
     const result = await callSubagent(ctx, {
       description: 'effort work',
@@ -223,7 +336,7 @@ describe('dsh-tool-subagent model selection', () => {
     const inherited = await setup({ provider: 'mock', withModelSelection: true })
     inherited.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
     const inheritedParent = modelSelectionSetupAgent(inherited)
-    ;(inheritedParent as unknown as { options: Agent['options'] }).options = parentWithRoute().options
+    ;(inheritedParent as { options: Agent['options'] }).options = parentWithRoute().options
     const inheritedResult = await callSubagent(inherited, {
       description: 'parent effort work',
       prompt: 'do it',
@@ -236,7 +349,7 @@ describe('dsh-tool-subagent model selection', () => {
     const ctx = await setup({ provider: 'mock', withModelSelection: true })
     ctx.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
     const parent = modelSelectionSetupAgent(ctx)
-    ;(parent as unknown as { options: Agent['options'] }).options = parentWithRoute().options
+    ;(parent as { options: Agent['options'] }).options = parentWithRoute().options
     const result = await callSubagent(ctx, {
       description: 'same route work',
       prompt: 'do it',
@@ -255,7 +368,7 @@ describe('dsh-tool-subagent model selection', () => {
     }, { onStart: (request) => { requests.push(request) } })
     ctx.llm.registerAdapter(['current-provider'], new MockAdapter([], REASONING))
     const parent = modelSelectionSetupAgent(ctx)
-    ;(parent as unknown as { options: Agent['options'] }).options = {
+    ;(parent as { options: Agent['options'] }).options = {
       provider: 'created-provider', model: 'created-model',
     }
     parent.session.append('request/header', {
@@ -392,6 +505,8 @@ describe('dsh-tool-subagent model selection', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
+    await mountWorkingDirectoryFixture(ctx)
     await ctx.plugin(SubagentRuntime)
     await mock.mountScriptedProvider(ctx, { name: 'mock' })
     await ctx.plugin(tool, {
@@ -403,32 +518,90 @@ describe('dsh-tool-subagent model selection', () => {
       },
     })
 
-    const configured = await callSubagent(ctx, { description: 'configured effort', prompt: 'do it' })
+    const configured = await callSubagent(ctx, { description: 'configured effort', prompt: 'do it' }, { agent: parentWithRoute() })
     expect(configured.isError).toBe(true)
     expect(text(configured)).toContain('`llm` service is unavailable')
 
   })
 
-  it('keeps pure inherited routing usable without an LLM service lookup', async () => {
-    let starts = 0
-    const ctx = new Context()
-    await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(SystemPrompt)
-    await ctx.plugin(ToolRuntime)
-    await ctx.plugin(SubagentRuntime)
-    await mock.mountScriptedProvider(ctx, { name: 'mock', onStart: () => { starts += 1 } })
-    await ctx.plugin(tool, { provider: 'mock' })
+  it('keeps pure inherited routing usable without resolving an LLM route', async () => {
+    const started = vi.fn()
+    const ctx = await setup({ provider: 'mock' }, { onStart: started })
+    const adapter = new MockAdapter([])
+    const resolve = vi.spyOn(adapter, 'resolveModel')
+    ctx.llm.registerAdapter(['alpha'], adapter)
 
     const result = await callSubagent(ctx, { description: 'inherit route', prompt: 'do it' })
     expect(result.isError).toBe(false)
-    expect(starts).toBe(1)
+    expect(started).toHaveBeenCalledOnce()
+    expect(resolve).not.toHaveBeenCalled()
   })
 
-  it('warns that changing a fork route can lose inherited-prefix reuse', async () => {
-    const ctx = await setup({ provider: 'mock', withModelSelection: true }, { inheritsParentContext: true })
-    const schema = ctx.tools.schemas(modelSelectionSetupAgent(ctx)).find(entry => entry.name === 'subagent')!
+  it('enforces Session authorization when a fork tool explicitly enables model selection', async () => {
+    const requests: SubagentStartRequest[] = []
+    const ctx = await setup({ provider: 'mock', withModelSelection: true }, {
+      inheritsParentContext: true,
+      onStart: (request) => { requests.push(request) },
+    })
+    ctx.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
+    const agent = modelSelectionSetupAgent(ctx)
+    const schema = ctx.tools.schemas(agent).find(entry => entry.name === 'subagent')!
     expect(schema.description).toContain('inherits this conversation')
-    expect(schema.description).toContain('can prevent provider-side reuse of the inherited conversation prefix')
+    expect(schema.description).not.toContain('list_subagent_models')
+    expect(schema.description).toContain('Changing the route can prevent provider-side reuse of the inherited conversation prefix.')
+
+    const allowed = await callSubagent(ctx, {
+      description: 'fork work', prompt: 'do it', provider: 'alpha', model: 'fast-model', reasoning_effort: 'low',
+    })
+    expect(allowed.isError, text(allowed)).toBe(false)
+    expect(requests[0]?.agentOptions).toEqual({
+      provider: 'alpha', model: 'fast-model', reasoningEffort: ReasoningEffortId('low'),
+    })
+
+    const denied = await callSubagent(ctx, {
+      description: 'unauthorized route', prompt: 'do it', provider: 'alpha', model: 'denied-model',
+    })
+    expect(denied.isError).toBe(true)
+    expect(text(denied)).toContain('is not allowed for this Session')
+
+    const invalidEffort = await callSubagent(ctx, {
+      description: 'unsupported effort', prompt: 'do it', provider: 'alpha', model: 'fast-model', reasoning_effort: 'invalid',
+    })
+    expect(invalidEffort.isError).toBe(true)
+    expect(text(invalidEffort)).toContain('invalid')
+    expect(requests).toHaveLength(1)
+  })
+
+  it('keeps fork model selection unavailable without instance opt-in even with Session authorization', async () => {
+    const started = vi.fn()
+    const ctx = await setup({ provider: 'mock' }, {
+      inheritsParentContext: true,
+      onStart: started,
+    })
+    const agent = modelSelectionSetupAgent(ctx)
+    agent.session.append('subagent/model-selection-policy', {
+      allowedModels: [{ provider: 'alpha', model: 'fast-model' }],
+    })
+    const schema = ctx.tools.schemas(agent).find(entry => entry.name === 'subagent')!
+    const props = (schema.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    expect(Object.keys(props).sort()).toEqual(['cwd', 'description', 'prompt'])
+    expect(schema.description).toContain('inherits this conversation')
+    expect(schema.description).not.toContain('list_subagent_models')
+    expect(ctx.tools.get('list_subagent_models', agent)).toBeUndefined()
+
+    for (const selection of [
+      { provider: 'alpha', model: 'fast-model' },
+      { reasoning_effort: 'high' },
+    ]) {
+      const result = await callSubagent(ctx, { description: 'fork work', prompt: 'do it', ...selection })
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('model selection is disabled for this tool instance')
+    }
+    expect(started).not.toHaveBeenCalled()
+
+    const inherited = await callSubagent(ctx, { description: 'fork work', prompt: 'do it' })
+    expect(inherited.isError).toBe(false)
+    expect(started).toHaveBeenCalledOnce()
   })
 
   it('propagates an exact-route resolver failure before child creation', async () => {

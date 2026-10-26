@@ -189,7 +189,7 @@ describe('usage gateway through a real Loader composition', () => {
     } finally {
       for (const [name, value] of saved) {
         if (value !== undefined) process.env[name] = value
-        else delete process.env[name]
+        else Reflect.deleteProperty(process.env, name)
       }
     }
   })

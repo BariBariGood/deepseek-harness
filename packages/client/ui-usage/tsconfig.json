@@ -15,10 +15,7 @@
       "path": "../../api/remotes/tsconfig.client.json"
     },
     {
-      "path": "../../runtime-diagnostics/invariants"
-    },
-    {
-      "path": "../locale"
+      "path": "../locale/tsconfig.client.json"
     },
     {
       "path": "../ui-primitives"

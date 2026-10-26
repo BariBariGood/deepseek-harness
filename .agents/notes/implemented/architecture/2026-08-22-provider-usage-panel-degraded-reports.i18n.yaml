@@ -1,6 +1,22 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for 2026-08-22-provider-usage-panel-degraded-reports.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-22-provider-usage-panel-degraded-reports.md
-2026-08-22-provider-usage-panel-degraded-reports.md: 32e91ac91cf1e7cdc77dc89104a8ac2082cad7a9
-2026-08-22-provider-usage-panel-degraded-reports.zh.md: 3a9770521734bfb040747143ccfe5a8d0798cc1c
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint:
+  en: 0ef73b6cdb21ac22
+  zh: 8d368f14c2aa5619
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint/problem:
+  en: eada414e8762bc83
+  zh: b48ad47ccc984f06
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint/decision:
+  en: 2eba3984993fc4de
+  zh: 65370c3f7e30f44a
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint/testing:
+  en: 744c8cb5a6867ba2
+  zh: 8b4d65461132709e
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint/consequences:
+  en: a789d95909bb54a2
+  zh: d0c0fbbdd160c821
+/agent-note-the-usage-panel-degrades-per-provider-instead-of-failing-the-endpoint/alternatives-considered:
+  en: 3101ecbd82429fde
+  zh: 1c6c0b45bf3c28d9

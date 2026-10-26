@@ -94,6 +94,7 @@ describe('json backend specifics', () => {
     await expect(unit.putRecord('t', 'k', { v: 'rejected' })).rejects.toThrow()
     await expect(unit.putRecord('t', 'k2', { v: 'also rejected' })).rejects.toThrow()
     await expect(unit.deleteRecord('t', 'k')).rejects.toThrow()
+    await expect(unit.deleteRecords('t', ['k'])).rejects.toThrow()
     await expect(unit.setGlobal({ g: 'rejected' })).rejects.toThrow()
     await rm(path, { recursive: true })
     await rename(backup, path)
@@ -178,6 +179,38 @@ describe('json backend specifics', () => {
 
     await writeFile(join(root, 'shape.json'), JSON.stringify('just a string'), 'utf8')
     await expect(backend.kv.open(descriptor)).rejects.toMatchObject({ code: 'malformed-medium' })
+
+    await writeFile(join(root, 'shape.json'), JSON.stringify([{ t: { k: 1 } }]), 'utf8')
+    await expect(backend.kv.open(descriptor)).rejects.toMatchObject({ code: 'malformed-medium' })
+    await backend.close()
+  })
+
+  it('rejects a whole-unit document whose tables is an array', async () => {
+    const root = await freshRoot()
+    // An array passes `typeof 'object'`: reading it as a table map would open
+    // an empty unit, and the first write would republish the file without the
+    // records it could not see.
+    await writeFile(
+      join(root, 'shape.json'),
+      JSON.stringify({ unit: { name: 'shape', version: 1 }, global: null, tables: [{ t: { k: { hello: 'world' } } }] }),
+      'utf8',
+    )
+    const backend = new JsonStorageBackend(root)
+    await expect(backend.kv.open(descriptor)).rejects.toMatchObject({ code: 'malformed-medium' })
+    await expect(backend.kv.open(descriptor)).rejects.toThrow(/unit 'shape': tables is not an object/)
+    await backend.close()
+  })
+
+  it('opens a whole-unit document whose declared tables hold records', async () => {
+    const root = await freshRoot()
+    await writeFile(
+      join(root, 'shape.json'),
+      `${JSON.stringify({ unit: { name: 'shape', version: 1 }, global: { g: 1 }, tables: { t: { k: { hello: 'world' } } } }, null, 2)}\n`,
+      'utf8',
+    )
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open(descriptor)
+    expect(await unit.loadAll()).toEqual({ tables: { t: { k: { hello: 'world' } } }, global: { g: 1 } })
     await backend.close()
   })
 
@@ -250,6 +283,39 @@ describe('per-record layout', () => {
     expect(await unit2.loadAll()).toEqual({ tables: { t: { k: { v: 2 } } }, global: null })
     await unit2.deleteRecord('t', 'k')
     expect(await unit2.loadAll()).toEqual({ tables: { t: {} }, global: null })
+    await backend.close()
+  })
+
+  it('deletes a batch of documents as one staged set', async () => {
+    const root = await freshRoot()
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open(descriptor)
+    await unit.putRecord('t', 'k1', { v: 1 })
+    await unit.putRecord('t', 'k2', { v: 2 })
+    await unit.putRecord('t', 'k3', { v: 3 })
+    await unit.deleteRecords('t', ['k1', 'k3', 'missing', 'k1'])
+    expect(await unit.loadAll()).toEqual({ tables: { t: { k2: { v: 2 } } }, global: null })
+    // The staged documents are unlinked rather than left in the tree.
+    expect((await readdir(join(root, 'recs', 't'))).sort()).toEqual(['k2.json'])
+    await backend.close()
+  })
+
+  it('restores a batch when a staged rename fails, and rejects unsafe keys first', async () => {
+    const root = await freshRoot()
+    const backend = new JsonStorageBackend(root)
+    const unit = await backend.kv.open(descriptor)
+    await unit.putRecord('t', 'k1', { v: 1 })
+    await unit.putRecord('t', 'k2', { v: 2 })
+    // A non-empty directory at the second staged path makes its rename fail
+    // after the first document was staged out of the readable set.
+    const blocked = `${recordPath(root, 'k2')}.deleting`
+    await mkdir(blocked)
+    await writeFile(join(blocked, 'occupied'), '', 'utf8')
+    await expect(unit.deleteRecords('t', ['k1', 'k2'])).rejects.toThrow()
+    expect(await unit.loadAll()).toEqual({ tables: { t: { k1: { v: 1 }, k2: { v: 2 } } }, global: null })
+    await rm(blocked, { recursive: true })
+    // An unsafe key rejects before any document is renamed.
+    await expect(unit.deleteRecords('t', ['ok', 'a/b'])).rejects.toThrow(/not path-safe/)
     await backend.close()
   })
 

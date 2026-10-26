@@ -15,6 +15,11 @@ const HOST_DEPENDENCY_PACKAGES: readonly string[] = [
   '@deepseek-ai/dsh-session',
 ]
 
+/** Required Cordis services whose Host imports are type-only. */
+const REQUIRED_SERVICE_PEERS = {
+  '@deepseek-ai/dsh-api-terminal-controller': ['@deepseek-ai/dsh-subprocess'],
+} as const satisfies Readonly<Record<string, readonly string[]>>
+
 /** Development-only package relationships not represented by source imports. */
 const CONFIGURATION_ONLY_DEV_DEPENDENCIES = {
   '@deepseek-ai/dsh-client-locale': ['@deepseek-ai/dsh-api-remotes'],
@@ -34,6 +39,7 @@ const DUPLICATE_SAFE_PACKAGES: readonly string[] = [
   '@deepseek-ai/dsh-brand',
   '@deepseek-ai/dsh-lazy-require',
   '@deepseek-ai/dsh-typert-protocol',
+  '@deepseek-ai/dsh-util-code-language',
   '@deepseek-ai/dsh-util-crypto',
   '@deepseek-ai/dsh-util-values',
 ]
@@ -45,6 +51,8 @@ const DUPLICATE_SAFE_PACKAGES: readonly string[] = [
  * prominent heading in the pull request description.
  */
 const SAFE_HOST_DEPENDENCY_EXPORTS = {
+  '@deepseek-ai/dsh-atomic-write': ['withFileLock'],
+  '@deepseek-ai/dsh-computer-use/brand': ['ComputerUseProviderName'],
   '@deepseek-ai/dsh-credentials': ['credentialKey'],
   '@deepseek-ai/dsh-deque': ['Deque'],
   '@deepseek-ai/dsh-llm': ['callConfigEquals'],
@@ -55,8 +63,12 @@ const SAFE_HOST_DEPENDENCY_EXPORTS = {
 
 /** Runtime exports that require every consumer to resolve the provider's shared peer instance. */
 const PEER_REQUIRED_HOST_EXPORTS = {
-  '@deepseek-ai/dsh-subprocess': ['SubprocessExecutableNotFoundError'],
-  '@deepseek-ai/dsh-scope': ['carrierKeyOf', 'scopeOf', 'scopeTarget'],
+  // CUA checks UserQuestionError and preserves AttachmentError from image admission.
+  '@deepseek-ai/dsh-attachment': ['admitEncodedImages'],
+  '@deepseek-ai/dsh-user-questions': ['UserQuestionError'],
+  // `instanceof` checks need the translator's own class instance.
+  '@deepseek-ai/dsh-experimental-translator': ['TranslationError'],
+  '@deepseek-ai/dsh-scope': ['carrierKeyOf', 'createScope', 'scopeOf', 'scopeTarget'],
   '@deepseek-ai/dsh-session': ['SESSION_FORMAT_VERSION'],
   '@deepseek-ai/dsh-session-persistence': ['SessionPersistenceNotFoundError'],
 } as const satisfies HostDependencyExports
@@ -69,6 +81,7 @@ export interface PackageDependencyPolicy {
   readonly clientFaceInclude: readonly string[]
   readonly clientFaceExclude: readonly string[]
   readonly hostPackages: readonly string[]
+  readonly requiredServicePeers?: Readonly<Record<string, readonly string[]>>
   readonly configurationOnlyDevDependencies: Readonly<Record<string, readonly string[]>>
   readonly duplicateSafePackages?: readonly string[]
   readonly safeHostDependencyExports: HostDependencyExports
@@ -80,6 +93,7 @@ export const PACKAGE_DEPENDENCY_POLICY: PackageDependencyPolicy = {
   clientFaceInclude: CLIENT_FACE_INCLUDE,
   clientFaceExclude: CLIENT_FACE_EXCLUDE,
   hostPackages: HOST_DEPENDENCY_PACKAGES,
+  requiredServicePeers: REQUIRED_SERVICE_PEERS,
   configurationOnlyDevDependencies: CONFIGURATION_ONLY_DEV_DEPENDENCIES,
   duplicateSafePackages: DUPLICATE_SAFE_PACKAGES,
   safeHostDependencyExports: SAFE_HOST_DEPENDENCY_EXPORTS,
@@ -93,18 +107,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Whether a package manifest declares a dynamically loaded Client entry. */
 export function hasClientDeclaration(dshField: unknown): boolean {
   return isRecord(dshField) && Object.hasOwn(dshField, 'client')
-}
-
-/** Whether the repository policy flattens one package's non-Cordis peers. */
-export function usesFlattenedPackageDependencies(
-  manifestPath: string,
-  packageName: string,
-  dshField: unknown,
-  policy: PackageDependencyPolicy = PACKAGE_DEPENDENCY_POLICY,
-): boolean {
-  if (!manifestPath.startsWith('packages/') || manifestPath.startsWith('packages/experimental/')) return false
-  if (policy.hostPackages.includes(packageName)) return true
-  if (manifestPath.startsWith('packages/client/')) return true
-  const included = hasClientDeclaration(dshField) || policy.clientFaceInclude.includes(packageName)
-  return included && !policy.clientFaceExclude.includes(packageName)
 }
